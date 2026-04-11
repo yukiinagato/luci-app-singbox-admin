@@ -2,6 +2,8 @@
   "luci-app-singbox-admin": {
     "description": "Grant access to sing-box admin pages",
     "read": {
+      "cgi-io": [ "cbi" ],
+      "luci": [ "admin/services/sing-box/*" ],
       "ubus": {
         "file": ["list", "read"],
         "service": ["list"]
@@ -9,6 +11,8 @@
       "uci": ["singbox"]
     },
     "write": {
+      "cgi-io": [ "cbi" ],
+      "luci": [ "admin/services/sing-box/*" ],
       "ubus": {
         "file": ["write"],
         "service": ["start", "stop", "restart"]
