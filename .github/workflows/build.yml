@@ -1,8 +1,5 @@
 name: Build luci-app-singbox-admin
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
   workflow_dispatch:
   push:
@@ -14,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Prepare dependencies
         run: |
@@ -49,7 +46,7 @@ jobs:
           find sdk/bin/packages -type f -name "*luci-app-singbox-admin*.ipk" -exec cp -v {} artifacts/ \;
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: luci-app-singbox-admin-x86_64-ipk
           path: artifacts/*.ipk
@@ -61,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           name: luci-app-singbox-admin-x86_64-ipk
           path: artifacts
