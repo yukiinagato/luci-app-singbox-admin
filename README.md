@@ -1,0 +1,1 @@
+[![Build luci-app-singbox-admin](https://github.com/yukiinagato/luci-app-singbox-admin/actions/workflows/build.yml/badge.svg)](https://github.com/yukiinagato/luci-app-singbox-admin/actions/workflows/build.yml)
