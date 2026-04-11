@@ -3,6 +3,8 @@ name: Build
 on:
   workflow_dispatch:
   push:
+    branches:
+      - '**'
     tags:
       - 'v*'
 
@@ -12,22 +14,42 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Inject Version
         run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.1")
+          BASE_VER=$(echo "$LATEST_TAG" | sed 's/^v//')
+          
+          TIMESTAMP=$(date +%Y%m%d%H%M)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             RAW_VER=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-            echo "Injecting version $RAW_VER into control"
-            sed -i "s/Version: .*/Version: $RAW_VER-1/" control
+            FINAL_VER="${RAW_VER}-1"
+          else
+            FINAL_VER="${BASE_VER}-git-${TIMESTAMP}-${SHORT_SHA}"
+          fi
+          
+          echo "Final Version: $FINAL_VER"
+          echo "FINAL_VER=$FINAL_VER" >> $GITHUB_ENV
+          
+          if [ -f "control" ]; then
+            sed -i "s/Version: .*/Version: $FINAL_VER/" control
           fi
 
       - name: Build IPK
         run: |
           mkdir -p ipk_root/CONTROL
           
-          cp control ipk_root/CONTROL/
+          if [ -f "control" ]; then
+            cp control ipk_root/CONTROL/
+          fi
           
-          cp -r root/* ipk_root/
+          if [ -d "root" ]; then
+            cp -r root/* ipk_root/
+          fi
           
           chmod -R 755 ipk_root/
           
@@ -38,12 +60,14 @@ jobs:
       - name: Collect Artifacts
         run: |
           mkdir -p artifacts
-          mv *.ipk artifacts/
+          for f in *.ipk; do
+            mv "$f" "artifacts/luci-app-singbox-admin_${{ env.FINAL_VER }}_all.ipk"
+          done
 
       - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-singbox-admin-x86_64-ipk
+          name: ipk-${{ github.ref_name }}-${{ env.FINAL_VER }}
           path: artifacts/*.ipk
 
   release:
@@ -56,8 +80,9 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: luci-app-singbox-admin-x86_64-ipk
+          pattern: ipk-*
           path: artifacts
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
