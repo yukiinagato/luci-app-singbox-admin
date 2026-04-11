@@ -6,6 +6,7 @@ function index()
 	end
 
 	local page = entry({"admin", "services", "sing-box"}, firstchild(), _("Sing-box设置"), 60)
+	page.sysauth = "root" 
 	page.dependent = true
 	page.acl_depends = { "luci-app-singbox-admin" }
 
