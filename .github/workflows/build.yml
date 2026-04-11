@@ -39,12 +39,12 @@ jobs:
           tar -xf sdk.tar.xz
           mv openwrt-sdk-* sdk
 
-      # 核心步骤：根据 Tag 自动修改 Makefile 里的版本号
+      # 關鍵修正：從 Tag 提取版本並寫入 Makefile
       - name: Update version from Tag
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             NEW_VERSION=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-            echo "Updating Makefile version to $NEW_VERSION"
+            echo "Updating Makefile PKG_VERSION to $NEW_VERSION"
             sed -i "s/PKG_VERSION:=.*/PKG_VERSION:=$NEW_VERSION/" Makefile
           fi
 
