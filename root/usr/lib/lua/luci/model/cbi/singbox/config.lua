@@ -14,6 +14,17 @@ if not fs.access(config_path) then
 	fs.writefile(config_path, "{}\n")
 end
 
+local meta = m:field(DummyValue, "file_meta", translate("File Metadata"))
+meta.rawhtml = true
+function meta.cfgvalue()
+	local st = fs.stat(config_path)
+	local mtime = (st and st.mtime) and os.date("%Y-%m-%d %H:%M:%S", st.mtime) or "-"
+	return "<div style='padding:8px 10px;background:#f8f8f8;border:1px solid #e5e5e5;'>"
+		.. "<div><strong>Absolute Path:</strong> " .. util.pcdata(config_path) .. "</div>"
+		.. "<div><strong>Last Modified:</strong> " .. util.pcdata(mtime) .. "</div>"
+		.. "</div>"
+end
+
 local error_box = m:field(DummyValue, "check_error", translate("Validation Output"))
 error_box.rawhtml = true
 function error_box.cfgvalue()
@@ -36,18 +47,18 @@ function cfg.cfgvalue()
 end
 
 function cfg.write(self, section, value)
-    fs.mkdirr("/etc/sing-box/")
-    fs.writefile(check_path, value)
+	fs.mkdirr("/etc/sing-box/")
+	fs.writefile(check_path, value)
 
-    local cmd = string.format("/usr/bin/sing-box check -c %q >%q 2>&1", check_path, check_log)
-    if sys.call(cmd) ~= 0 then
-        self.error = { [section] = translate("Configuration Check Failed!") }
-        return false 
-    end
+	local cmd = string.format("/usr/bin/sing-box check -c %q >%q 2>&1", check_path, check_log)
+	if sys.call(cmd) ~= 0 then
+		self.error = { [section] = translate("Configuration Check Failed!") }
+		return false
+	end
 
-    fs.writefile(config_path, value)
-    fs.writefile(check_log, "")
-    m.message = translate("Configuration saved.")
+	fs.writefile(config_path, value)
+	fs.writefile(check_log, "")
+	m.message = translate("Configuration saved.")
 end
 
 local restart = m:field(Button, "restart", translate("Restart sing-box"))
