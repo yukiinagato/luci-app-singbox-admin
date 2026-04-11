@@ -11,6 +11,6 @@ function index()
 	page.acl_depends = { "luci-app-singbox-admin" }
 
 	entry({"admin", "services", "sing-box", "main"}, cbi("singbox/main"), _("Dashboard"), 10).leaf = true
-	entry({"admin", "services", "sing-box", "config"}, cbi("singbox/config"), _("Config Editor"), 20).leaf = true
-	entry({"admin", "services", "sing-box", "script"}, cbi("singbox/script"), _("Firewall Script"), 30).leaf = true
+	entry({"admin", "services", "sing-box", "config"}, form("singbox/config"), _("Config Editor"), 20).leaf = true
+	entry({"admin", "services", "sing-box", "script"}, form("singbox/script"), _("Firewall Script"), 30).leaf = true
 end
