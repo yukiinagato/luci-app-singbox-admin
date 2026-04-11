@@ -1,0 +1,19 @@
+{
+  "luci-app-singbox-admin": {
+    "description": "Grant access to sing-box admin pages",
+    "read": {
+      "ubus": {
+        "file": ["list", "read"],
+        "service": ["list"]
+      },
+      "uci": ["singbox"]
+    },
+    "write": {
+      "ubus": {
+        "file": ["write"],
+        "service": ["start", "stop", "restart"]
+      },
+      "uci": ["singbox"]
+    }
+  }
+}
