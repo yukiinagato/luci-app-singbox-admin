@@ -28,7 +28,7 @@ function full_ver.cfgvalue()
 	if not out or out == "" then
 		out = "unknown"
 	end
-	return "<pre style='max-height:260px;overflow:auto;margin:0;'>" .. util.pcdata(out) .. "</pre>"
+	return "<pre id='sb-full-version' style='max-height:260px;overflow:auto;margin:0;'>" .. util.pcdata(out) .. "</pre>"
 end
 
 local start = m:field(Button, "start", translate("Start"))

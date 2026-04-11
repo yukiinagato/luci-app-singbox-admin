@@ -66,8 +66,7 @@ end
 
 local function get_version_output()
 	local out = sys.exec("/usr/bin/sing-box version 2>&1")
-	out = trim(out)
-	return out ~= "" and out or "unknown"
+	return (out and out ~= "") and out or "unknown"
 end
 
 local function detect_raw_arch()

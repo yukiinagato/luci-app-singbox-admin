@@ -19,11 +19,20 @@ jobs:
 
       - name: Inject Version
         run: |
+          # 1. 获取最近的标签作为基准
           LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.1")
           BASE_VER=$(echo "$LATEST_TAG" | sed 's/^v//')
+          
+          # 2. 获取时间戳和短哈希
           TIMESTAMP=$(date +%Y%m%d%H%M)
           SHORT_SHA=$(git rev-parse --short HEAD)
 
+          # 3. 清洗分支名：将 / 替换为 -
+          # 这一步解决了你遇到的报错
+          SAFE_REF=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          echo "SAFE_REF=$SAFE_REF" >> $GITHUB_ENV
+
+          # 4. 根据触发类型决定最终版本号
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             RAW_VER=$(echo "${{ github.ref_name }}" | sed 's/^v//')
             FINAL_VER="${RAW_VER}-1"
@@ -52,7 +61,7 @@ jobs:
       - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: ipk-${{ github.ref_name }}-${{ env.FINAL_VER }}
+          name: ipk-${{ env.SAFE_REF }}-${{ env.FINAL_VER }}
           path: artifacts/*.ipk
 
   release:
