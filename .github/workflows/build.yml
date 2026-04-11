@@ -33,7 +33,7 @@ jobs:
           
           wget https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build
           chmod +x ipkg-build
-          ./ipkg-build -o root -g root ipk_root .
+          ./ipkg-build ipk_root .
 
       - name: Collect Artifacts
         run: |
