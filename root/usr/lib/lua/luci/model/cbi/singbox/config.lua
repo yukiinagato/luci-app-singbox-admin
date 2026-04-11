@@ -36,17 +36,18 @@ function cfg.cfgvalue()
 end
 
 function cfg.write(self, section, value)
-	fs.mkdirr("/etc/sing-box/")
-	fs.writefile(check_path, value)
+    fs.mkdirr("/etc/sing-box/")
+    fs.writefile(check_path, value)
 
-	local cmd = string.format("/usr/bin/sing-box check -c %q >%q 2>&1", check_path, check_log)
-	if sys.call(cmd) ~= 0 then
-		return
-	end
+    local cmd = string.format("/usr/bin/sing-box check -c %q >%q 2>&1", check_path, check_log)
+    if sys.call(cmd) ~= 0 then
+        self.error = { [section] = translate("Configuration Check Failed!") }
+        return false 
+    end
 
-	fs.writefile(config_path, value)
-	fs.writefile(check_log, "")
-	m.message = translate("Configuration saved. You may restart sing-box now.")
+    fs.writefile(config_path, value)
+    fs.writefile(check_log, "")
+    m.message = translate("Configuration saved.")
 end
 
 local restart = m:field(Button, "restart", translate("Restart sing-box"))
