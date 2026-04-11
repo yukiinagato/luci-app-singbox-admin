@@ -1,0 +1,7 @@
+Package: luci-app-singbox-admin
+Version: 0.0.1
+Depends: luci-base, sing-box
+Section: luci
+Architecture: all
+Maintainer: Yukiinagato
+Description: Sing-box Admin Web Interface
