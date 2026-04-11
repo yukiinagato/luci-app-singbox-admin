@@ -61,7 +61,7 @@ jobs:
       - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
-          name: ipk-${{ github.ref_name }}-${{ env.FINAL_VER }}
+          name: ipk-${{ env.SAFE_REF }}-${{ env.FINAL_VER }}
           path: artifacts/*.ipk
 
   release:
