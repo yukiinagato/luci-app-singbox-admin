@@ -4,6 +4,7 @@ set -eu
 
 VERSION=""
 ARCH=""
+URL=""
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -15,6 +16,10 @@ while [ "$#" -gt 0 ]; do
 			ARCH="${2:-}"
 			shift 2
 			;;
+		--url)
+			URL="${2:-}"
+			shift 2
+			;;
 		*)
 			echo "Unknown argument: $1" >&2
 			exit 1
@@ -22,19 +27,31 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-case "$VERSION" in
-	""|*[!0-9A-Za-z._-]*)
-		echo "Invalid version" >&2
-		exit 1
-		;;
-esac
+if [ -n "$URL" ]; then
+	case "$URL" in
+		http://*|https://*) ;;
+		*)
+			echo "Invalid URL" >&2
+			exit 1
+			;;
+	esac
+else
+	case "$VERSION" in
+		""|*[!0-9A-Za-z._-]*)
+			echo "Invalid version" >&2
+			exit 1
+			;;
+	esac
 
-case "$ARCH" in
-	""|*[!a-z0-9_-]*)
-		echo "Invalid architecture" >&2
-		exit 1
-		;;
-esac
+	case "$ARCH" in
+		""|*[!a-z0-9_-]*)
+			echo "Invalid architecture" >&2
+			exit 1
+			;;
+	esac
+
+	URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box-${VERSION}-linux-${ARCH}.tar.gz"
+fi
 
 TMPDIR="$(mktemp -d /tmp/singbox-update.XXXXXX)"
 cleanup() {
@@ -42,7 +59,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box-${VERSION}-linux-${ARCH}.tar.gz"
 TARBALL="$TMPDIR/sing-box.tar.gz"
 
 if command -v uclient-fetch >/dev/null 2>&1; then
@@ -76,4 +92,4 @@ if [ "$WAS_RUNNING" -eq 1 ]; then
 	/etc/init.d/sing-box start >/dev/null 2>&1 || true
 fi
 
-echo "Updated to ${VERSION} (${ARCH})"
+echo "Updated from $URL"

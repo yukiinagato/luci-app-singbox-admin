@@ -46,35 +46,48 @@ local function sanitize_version(v)
 end
 
 local function sanitize_arch(a)
-	a = trim(a)
+	a = trim(a):lower()
 	if a:match("^[a-z0-9_%-]+$") then
 		return a
 	end
 	return nil
 end
 
-local function get_current_version()
-	local line = trim(sys.exec("/usr/bin/sing-box version 2>/dev/null | head -n 1"))
-	if line == "" then
-		return "unknown"
+local function sanitize_url(u)
+	u = trim(u)
+	if u == "" then
+		return nil
 	end
-	return trim((line:match("version%s+([^%s]+)") or line:gsub("^sing%-box%s+", "")))
+	if u:match("^https?://[%w%._%-%~:/%?#%[%]@!%$&'%(%)%*%+,;=]+$") then
+		return u
+	end
+	return nil
 end
 
-local function detect_arch()
+local function get_version_output()
+	local out = sys.exec("/usr/bin/sing-box version 2>&1")
+	out = trim(out)
+	return out ~= "" and out or "unknown"
+end
+
+local function detect_raw_arch()
 	local arch = trim(sys.exec("uci -q get lucistat.system.arch 2>/dev/null"))
 	if arch ~= "" then
-		return arch
+		return arch, "uci:lucistat.system.arch"
 	end
 
 	local board = jsonc.parse(sys.exec("ubus call system board 2>/dev/null")) or {}
 	arch = trim(board.architecture or board.cpu_arch or "")
 	if arch ~= "" then
-		return arch
+		return arch, "ubus:system.board"
 	end
 
 	arch = trim(sys.exec("uname -m 2>/dev/null"))
-	return arch ~= "" and arch or "unknown"
+	if arch ~= "" then
+		return arch, "uname -m"
+	end
+
+	return "unknown", "fallback"
 end
 
 local function map_singbox_arch(raw)
@@ -109,6 +122,12 @@ local function map_singbox_arch(raw)
 	return "amd64"
 end
 
+local function detect_platform_arch()
+	local raw, source = detect_raw_arch()
+	local mapped = map_singbox_arch(raw)
+	return raw, mapped, source
+end
+
 local function read_panel_url()
 	if not fs.access(CONFIG_PATH) then
 		return nil
@@ -134,17 +153,12 @@ local function read_panel_url()
 end
 
 local function collect_listeners()
-	local cmd = "ss -lntup 2>/dev/null | awk 'NR>1 && /sing-box/ {print $1" ..
-		"\\t" ..
-		"$5" ..
-		"\\t" ..
-		"$NF}'"
-	local out = sys.exec(cmd)
+	local out = sys.exec("ss -lntup 2>/dev/null | awk 'NR>1 && /sing-box/ {print $1\"\\t\"$5\"\\t\"$NF}'")
 	if out == "" then
 		out = sys.exec("netstat -lntup 2>/dev/null | awk 'NR>2 && /sing-box/ {print $1\"\\t\"$4\"\\t\"$7}'")
 	end
-	local listeners = {}
 
+	local listeners = {}
 	for line in out:gmatch("[^\r\n]+") do
 		local proto, local_addr, proc = line:match("^(%S+)%s+(%S+)%s+(.*)$")
 		if proto and local_addr then
@@ -188,19 +202,23 @@ function action_update_info()
 		latest = trim((data.tag_name or ""):gsub("^v", ""))
 	end
 
+	local raw_arch, auto_arch, arch_source = detect_platform_arch()
 	json_response(200, {
-		current = get_current_version(),
+		version_output = get_version_output(),
 		latest = latest,
-		raw_arch = detect_arch(),
-		auto_arch = map_singbox_arch(detect_arch())
+		raw_arch = raw_arch,
+		auto_arch = auto_arch,
+		arch_source = arch_source
 	})
 end
 
 function action_update_download()
 	local version = sanitize_version(http.formvalue("version") or "")
 	local arch = sanitize_arch(http.formvalue("arch") or "")
-	if not version or not arch then
-		json_response(400, { ok = false, message = "Invalid version or architecture." })
+	local url = sanitize_url(http.formvalue("url") or "")
+
+	if not url and (not version or not arch) then
+		json_response(400, { ok = false, message = "Use URL or provide valid version + architecture." })
 		return
 	end
 
@@ -209,13 +227,19 @@ function action_update_download()
 		return
 	end
 
-	local cmd = string.format("%q --version %q --arch %q >/tmp/sing-box-update.log 2>&1", UPDATE_SCRIPT, version, arch)
+	local cmd
+	if url then
+		cmd = string.format("%q --url %q >/tmp/sing-box-update.log 2>&1", UPDATE_SCRIPT, url)
+	else
+		cmd = string.format("%q --version %q --arch %q >/tmp/sing-box-update.log 2>&1", UPDATE_SCRIPT, version, arch)
+	end
+
 	local rc = sys.call(cmd)
 	if rc == 0 then
 		json_response(200, {
 			ok = true,
 			message = "sing-box updated successfully.",
-			version = get_current_version()
+			version_output = get_version_output()
 		})
 	else
 		local msg = trim(fs.readfile("/tmp/sing-box-update.log") or "")

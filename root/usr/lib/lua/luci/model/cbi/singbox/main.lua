@@ -21,13 +21,14 @@ function status_text.cfgvalue()
 	return string.format("<span id='sb-service-status'>%s<br />Boot: %s</span>", s1, s2)
 end
 
-local current_ver = m:field(DummyValue, "current_version", translate("Current Version"))
-function current_ver.cfgvalue()
-	local line = (sys.exec("/usr/bin/sing-box version 2>/dev/null | head -n 1") or ""):gsub("^%s+", ""):gsub("%s+$", "")
-	if line == "" then
-		return "unknown"
+local full_ver = m:field(DummyValue, "full_version", translate("sing-box Version Output"))
+full_ver.rawhtml = true
+function full_ver.cfgvalue()
+	local out = sys.exec("/usr/bin/sing-box version 2>&1")
+	if not out or out == "" then
+		out = "unknown"
 	end
-	return (line:match("version%s+([^%s]+)") or line:gsub("^sing%-box%s+", ""))
+	return "<pre style='max-height:260px;overflow:auto;margin:0;'>" .. util.pcdata(out) .. "</pre>"
 end
 
 local start = m:field(Button, "start", translate("Start"))
@@ -48,7 +49,7 @@ function restart.write()
 	sys.call("/etc/init.d/sing-box restart >/dev/null 2>&1")
 end
 
-local updater = m:field(DummyValue, "updater", translate("Version Update"))
+local updater = m:field(DummyValue, "updater", translate("Binary & Platform Management"))
 updater.rawhtml = true
 function updater.cfgvalue()
 	local info_url = util.pcdata(app_url("update_info"))
@@ -56,12 +57,13 @@ function updater.cfgvalue()
 	return string.format([[ 
 <div>
 	<div><strong>%s:</strong> <span id="sb-online-version">Loading...</span></div>
+	<div><strong>%s:</strong> <span id="sb-arch-tip">Detecting...</span></div>
 	<div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
 		<label>%s</label>
 		<input id="sb-version-input" type="text" placeholder="1.13.0" style="min-width:120px" />
 		<label>%s</label>
 		<select id="sb-arch-select">
-			<option value="auto">Auto</option>
+			<option value="auto">Auto Detect (Recommended)</option>
 			<option value="amd64">amd64</option>
 			<option value="arm64">arm64</option>
 			<option value="armv7">armv7</option>
@@ -75,7 +77,15 @@ function updater.cfgvalue()
 			<option value="riscv64">riscv64</option>
 			<option value="s390x">s390x</option>
 			<option value="loong64">loong64</option>
+			<option value="custom">Custom/Manual</option>
 		</select>
+		<input id="sb-custom-arch" type="text" placeholder="custom platform" style="display:none;min-width:150px" />
+	</div>
+	<div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+		<label>%s</label>
+		<input id="sb-url-input" type="text" placeholder="https://.../sing-box-x.y.z-linux-amd64.tar.gz" style="min-width:420px;width:100%%;max-width:740px" />
+	</div>
+	<div style="margin:8px 0;">
 		<button class="btn cbi-button cbi-button-apply" type="button" id="sb-update-btn">%s</button>
 	</div>
 	<div id="sb-update-msg" style="color:#666"></div>
@@ -86,23 +96,37 @@ function updater.cfgvalue()
 	var updateUrl = '%s';
 	var archAuto = 'amd64';
 
+	var versionInput = document.getElementById('sb-version-input');
+	var archSelect = document.getElementById('sb-arch-select');
+	var customArch = document.getElementById('sb-custom-arch');
+	var urlInput = document.getElementById('sb-url-input');
+	var msg = document.getElementById('sb-update-msg');
+
+	function syncCustomArch(){
+		customArch.style.display = (archSelect.value === 'custom') ? '' : 'none';
+	}
+
 	function postUpdate(){
-		var input = document.getElementById('sb-version-input');
-		var archSel = document.getElementById('sb-arch-select');
-		var msg = document.getElementById('sb-update-msg');
-		var version = (input.value || '').trim();
-		if(!version){
+		var version = (versionInput.value || '').trim();
+		var custom = (customArch.value || '').trim();
+		var directUrl = (urlInput.value || '').trim();
+		var arch = archSelect.value === 'auto' ? archAuto : archSelect.value;
+		if (archSelect.value === 'custom') arch = custom;
+
+		if (!directUrl && (!version || !arch)) {
 			msg.style.color = 'red';
-			msg.textContent = 'Please input a version.';
+			msg.textContent = 'Please provide URL or version + architecture.';
 			return;
 		}
-		var arch = archSel.value === 'auto' ? archAuto : archSel.value;
+
 		msg.style.color = '#666';
 		msg.textContent = 'Downloading...';
-		XHR.post(updateUrl, { version: version, arch: arch }, function(x, data){
-			if (x.status === 200 && data && data.ok){
+		XHR.post(updateUrl, { version: version, arch: arch, url: directUrl }, function(x, data){
+			if (x.status === 200 && data && data.ok) {
 				msg.style.color = 'green';
-				msg.textContent = data.message + ' Current: ' + (data.version || '-');
+				msg.textContent = data.message;
+				var verNode = document.getElementById('sb-full-version');
+				if (verNode && data.version_output) verNode.textContent = data.version_output;
 			} else {
 				msg.style.color = 'red';
 				msg.textContent = (data && data.message) ? data.message : 'Update failed';
@@ -114,18 +138,28 @@ function updater.cfgvalue()
 		if (x.status !== 200 || !data) return;
 		archAuto = data.auto_arch || 'amd64';
 		var online = document.getElementById('sb-online-version');
-		online.textContent = data.latest ? (data.latest + ' (auto arch: ' + archAuto + ')') : 'Unavailable';
+		online.textContent = data.latest ? data.latest : 'Unavailable';
+		var archTip = document.getElementById('sb-arch-tip');
+		archTip.textContent = (data.raw_arch || 'unknown') + ' -> ' + archAuto + ' (' + (data.arch_source || 'auto') + ')';
 		if (data.latest) {
-			document.getElementById('sb-version-input').value = data.latest;
+			versionInput.value = data.latest;
+		}
+		if (data.version_output) {
+			var verNode = document.getElementById('sb-full-version');
+			if (verNode) verNode.textContent = data.version_output;
 		}
 	});
 
+	archSelect.addEventListener('change', syncCustomArch);
 	document.getElementById('sb-update-btn').addEventListener('click', postUpdate);
+	syncCustomArch();
 })();
 </script>]],
 	translate("Latest Version"),
+	translate("Detected Platform"),
 	translate("Version"),
-	translate("Architecture"),
+	translate("Platform/Architecture"),
+	translate("Binary Download URL"),
 	translate("Download & Replace"),
 	info_url,
 	update_url)
@@ -145,14 +179,17 @@ runtime.rawhtml = true
 function runtime.cfgvalue()
 	return [[
 <div><strong>PID:</strong> <span id="sb-pid">-</span></div>
-<div style="margin-top:6px;overflow:auto;">
-<table class="table cbi-section-table" style="width:100%;">
-	<thead>
-		<tr><th>Proto</th><th>Local Address</th><th>Port</th><th>Process</th></tr>
-	</thead>
-	<tbody id="sb-listeners"><tr><td colspan="4">Loading...</td></tr></tbody>
-</table>
-</div>]]
+<details id="sb-ports-box" style="margin-top:6px;">
+	<summary><strong>sing-box Active Ports</strong></summary>
+	<div style="max-height:260px;overflow-y:auto;margin-top:6px;">
+		<table class="table cbi-section-table" style="width:100%;">
+			<thead>
+				<tr><th>Proto</th><th>Local Address</th><th>Port</th><th>Process</th></tr>
+			</thead>
+			<tbody id="sb-listeners"><tr><td colspan="4">Loading...</td></tr></tbody>
+		</table>
+	</div>
+</details>]]
 end
 
 local ui_files = m:field(DummyValue, "ui_files", translate("UI Directory Listing"))
@@ -197,6 +234,15 @@ function js.cfgvalue()
 (function(){
 	var statusUrl = ']] .. status_url .. [[';
 
+	function esc(s) {
+		return String(s == null ? '' : s)
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#39;');
+	}
+
 	function render(data){
 		if(!data) return;
 		var status = document.getElementById('sb-service-status');
@@ -216,7 +262,7 @@ function js.cfgvalue()
 				tbody.innerHTML = '<tr><td colspan="4">No listening sockets</td></tr>';
 			} else {
 				tbody.innerHTML = rows.map(function(r){
-					return '<tr><td>' + (r.proto || '-') + '</td><td>' + (r.address || '-') + '</td><td>' + (r.port || '-') + '</td><td>' + (r.proc || '-') + '</td></tr>';
+					return '<tr><td>' + esc(r.proto || '-') + '</td><td>' + esc(r.address || '-') + '</td><td>' + esc(r.port || '-') + '</td><td>' + esc(r.proc || '-') + '</td></tr>';
 				}).join('');
 			}
 		}
