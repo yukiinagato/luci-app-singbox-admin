@@ -86,7 +86,12 @@ if [ -x /usr/bin/sing-box ]; then
 	cp /usr/bin/sing-box "/usr/bin/sing-box.bak.$(date +%Y%m%d%H%M%S)"
 fi
 
-install -m 0755 "$BIN" /usr/bin/sing-box
+# Note: BusyBox/OpenWrt has no `install` applet by default.
+# Stage into the target dir, set perms, then atomically rename into place.
+NEWBIN="/usr/bin/.sing-box.new.$$"
+cp "$BIN" "$NEWBIN"
+chmod 0755 "$NEWBIN"
+mv -f "$NEWBIN" /usr/bin/sing-box
 
 if [ "$WAS_RUNNING" -eq 1 ]; then
 	/etc/init.d/sing-box start >/dev/null 2>&1 || true
