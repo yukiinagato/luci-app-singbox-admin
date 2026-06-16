@@ -64,26 +64,13 @@ function updater.cfgvalue()
 		<label>%s</label>
 		<select id="sb-arch-select">
 			<option value="auto">Auto Detect (Recommended)</option>
-			<option value="amd64">amd64</option>
-			<option value="arm64">arm64</option>
-			<option value="armv7">armv7</option>
-			<option value="armv6">armv6</option>
-			<option value="armv5">armv5</option>
-			<option value="386">386</option>
-			<option value="mips">mips</option>
-			<option value="mips64">mips64</option>
-			<option value="mipsle">mipsle</option>
-			<option value="mips64le">mips64le</option>
-			<option value="riscv64">riscv64</option>
-			<option value="s390x">s390x</option>
-			<option value="loong64">loong64</option>
 			<option value="custom">Custom/Manual</option>
 		</select>
-		<input id="sb-custom-arch" type="text" placeholder="custom platform" style="display:none;min-width:150px" />
+		<input id="sb-custom-arch" type="text" placeholder="e.g. x86_64, aarch64_cortex-a53" style="display:none;min-width:200px" />
 	</div>
 	<div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
 		<label>%s</label>
-		<input id="sb-url-input" type="text" placeholder="https://.../sing-box-x.y.z-linux-amd64.tar.gz" style="min-width:420px;width:100%%;max-width:740px" />
+		<input id="sb-url-input" type="text" placeholder="optional: direct .ipk or .tar.gz URL (leave blank to use version + arch)" style="min-width:420px;width:100%%;max-width:740px" />
 	</div>
 	<div style="margin:8px 0;">
 		<button class="btn cbi-button cbi-button-apply" type="button" id="sb-update-btn">%s</button>

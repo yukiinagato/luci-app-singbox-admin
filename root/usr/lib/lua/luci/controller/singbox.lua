@@ -90,42 +90,42 @@ local function detect_raw_arch()
 	return "unknown", "fallback"
 end
 
-local function map_singbox_arch(raw)
-	local a = (raw or ""):lower()
-	if a:find("x86_64", 1, true) or a == "amd64" then
-		return "amd64"
-	elseif a:find("aarch64", 1, true) or a == "arm64" then
-		return "arm64"
-	elseif a:find("armv7", 1, true) then
-		return "armv7"
-	elseif a:find("armv6", 1, true) then
-		return "armv6"
-	elseif a:find("armv5", 1, true) then
-		return "armv5"
-	elseif a:find("i386", 1, true) or a:find("i686", 1, true) then
-		return "386"
-	elseif a:find("mips64el", 1, true) then
-		return "mips64le"
-	elseif a:find("mipsel", 1, true) then
-		return "mipsle"
-	elseif a:find("mips64", 1, true) then
-		return "mips64"
-	elseif a:find("mips", 1, true) then
-		return "mips"
-	elseif a:find("riscv64", 1, true) then
-		return "riscv64"
-	elseif a:find("s390x", 1, true) then
-		return "s390x"
-	elseif a:find("loongarch64", 1, true) then
-		return "loong64"
+-- The sing-box release assets named sing-box_<ver>_openwrt_<arch>.ipk use the
+-- OpenWrt package architecture (e.g. "x86_64", "aarch64_cortex-a53",
+-- "mipsel_24kc"). That string is exactly what `opkg print-architecture`
+-- reports, so we can feed it straight into the asset name -- no mapping table.
+local function detect_openwrt_arch()
+	local out = sys.exec("opkg print-architecture 2>/dev/null") or ""
+	local best, best_prio = nil, -1
+	-- lines look like: "arch x86_64 10"
+	for name, prio in out:gmatch("arch%s+(%S+)%s+(%d+)") do
+		if name ~= "all" and name ~= "noarch" then
+			local p = tonumber(prio) or 0
+			if p >= best_prio then
+				best, best_prio = name, p
+			end
+		end
 	end
-	return "amd64"
+	return best
 end
 
 local function detect_platform_arch()
-	local raw, source = detect_raw_arch()
-	local mapped = map_singbox_arch(raw)
-	return raw, mapped, source
+	local raw = detect_raw_arch()
+	local openwrt = detect_openwrt_arch()
+	if openwrt then
+		return raw, openwrt, "opkg print-architecture"
+	end
+	-- Fallback: derive a plausible opkg arch from the CPU when opkg is
+	-- unavailable. Covers only the common generic targets.
+	local a = (raw or ""):lower()
+	if a:find("x86_64", 1, true) or a == "amd64" then
+		return raw, "x86_64", "uname (fallback)"
+	elseif a:find("aarch64", 1, true) or a == "arm64" then
+		return raw, "aarch64_generic", "uname (fallback)"
+	elseif a:find("riscv64", 1, true) then
+		return raw, "riscv64_generic", "uname (fallback)"
+	end
+	return raw, "", "unknown"
 end
 
 -- Returns scheme, host, port parsed from clash_api.external_controller.
