@@ -50,8 +50,33 @@ function script.cfgvalue()
 end
 
 function script.write(self, section, value)
+	value = value:gsub("\r\n", "\n")
 	fs.writefile(script_path, value)
 	sys.call(string.format("chmod +x %q", script_path))
+end
+
+local editor_js = m:field(DummyValue, "editor_js", " ")
+editor_js.rawhtml = true
+function editor_js.cfgvalue()
+	return [[
+<script>
+(function(){
+	// Make Tab insert an indent instead of moving focus out of the editor.
+	function enableTab(ta){
+		if(!ta || ta._sbTab) return;
+		ta._sbTab = true;
+		ta.style.fontFamily = 'monospace';
+		ta.addEventListener('keydown', function(e){
+			if(e.key !== 'Tab' || e.ctrlKey || e.altKey || e.metaKey) return;
+			e.preventDefault();
+			var s = this.selectionStart, en = this.selectionEnd, v = this.value;
+			this.value = v.slice(0, s) + '\t' + v.slice(en);
+			this.selectionStart = this.selectionEnd = s + 1;
+		});
+	}
+	document.querySelectorAll('textarea').forEach(enableTab);
+})();
+</script>]]
 end
 
 return m

@@ -128,7 +128,10 @@ local function detect_platform_arch()
 	return raw, mapped, source
 end
 
-local function read_panel_url()
+-- Returns scheme, host, port parsed from clash_api.external_controller.
+-- The host is left as stored (may be a wildcard/loopback bind address);
+-- the browser substitutes its own hostname when needed.
+local function read_panel_info()
 	if not fs.access(CONFIG_PATH) then
 		return nil
 	end
@@ -146,10 +149,28 @@ local function read_panel_url()
 	end
 
 	ec = trim(ec)
-	if not ec:match("^https?://") then
-		ec = "http://" .. ec
+	local scheme = "http"
+	local rest = ec:match("^(https?)://(.+)$")
+	if rest then
+		scheme, ec = ec:match("^(https?)://(.+)$")
 	end
-	return ec
+
+	-- Split host:port, accounting for bracketed IPv6 like [::]:9090
+	local host, port
+	if ec:match("^%[") then
+		host, port = ec:match("^(%[.-%]):?(%d*)$")
+	else
+		host, port = ec:match("^(.-):(%d+)$")
+		if not host then
+			host, port = ec, ""
+		end
+	end
+
+	if not port or port == "" then
+		return nil
+	end
+
+	return { scheme = scheme, host = host or "", port = port }
 end
 
 local function collect_listeners()
@@ -180,13 +201,16 @@ function action_runtime_status()
 	local enabled = (sys.call("/etc/init.d/sing-box enabled >/dev/null 2>&1") == 0)
 	local pid = trim(sys.exec("pidof sing-box 2>/dev/null | awk '{print $1}'"))
 	local logs = sys.exec("logread -e sing-box 2>/dev/null | tail -n 200")
+	local panel = read_panel_info()
 	json_response(200, {
 		running = running,
 		enabled = enabled,
 		pid = pid ~= "" and pid or "-",
 		listeners = collect_listeners(),
 		logs = logs ~= "" and logs or "No sing-box logs found.",
-		panel_url = read_panel_url() or ""
+		panel_scheme = panel and panel.scheme or "",
+		panel_host = panel and panel.host or "",
+		panel_port = panel and panel.port or ""
 	})
 end
 

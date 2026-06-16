@@ -28,7 +28,7 @@ function full_ver.cfgvalue()
 	if not out or out == "" then
 		out = "unknown"
 	end
-	return "<pre style='max-height:260px;overflow:auto;margin:0;'>" .. util.pcdata(out) .. "</pre>"
+	return "<pre id='sb-full-version' style='max-height:260px;overflow:auto;margin:0;'>" .. util.pcdata(out) .. "</pre>"
 end
 
 local start = m:field(Button, "start", translate("Start"))
@@ -243,6 +243,23 @@ function js.cfgvalue()
 			.replace(/'/g, '&#39;');
 	}
 
+	// Build the external panel URL from the clash_api port, but use the
+	// hostname the browser is actually connected to. The bind address stored
+	// in config (0.0.0.0 / 127.0.0.1 / ::) is not reachable from the client.
+	function buildPanelHref(data){
+		if(!data || !data.panel_port) return '';
+		var host = data.panel_host || '';
+		var wildcard = { '': 1, '0.0.0.0': 1, '127.0.0.1': 1, 'localhost': 1, '::': 1, '[::]': 1, '::1': 1, '[::1]': 1 };
+		if(wildcard[host]){
+			host = window.location.hostname;
+		}
+		if(host.indexOf(':') !== -1 && host.charAt(0) !== '['){
+			host = '[' + host + ']'; // bracket bare IPv6
+		}
+		var scheme = data.panel_scheme || 'http';
+		return scheme + '://' + host + ':' + data.panel_port;
+	}
+
 	function render(data){
 		if(!data) return;
 		var status = document.getElementById('sb-service-status');
@@ -276,8 +293,9 @@ function js.cfgvalue()
 		var panelWrap = document.getElementById('sb-panel-wrap');
 		var panelLink = document.getElementById('sb-panel-link');
 		if(panelWrap && panelLink){
-			if(data.panel_url){
-				panelLink.href = data.panel_url;
+			var href = buildPanelHref(data);
+			if(href){
+				panelLink.href = href;
 				panelWrap.style.display = '';
 			} else {
 				panelWrap.style.display = 'none';
