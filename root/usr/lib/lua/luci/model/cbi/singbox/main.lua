@@ -2,6 +2,49 @@ local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local util = require "luci.util"
 local dsp = require "luci.dispatcher"
+local jsonc = require "luci.jsonc"
+local uci = require "luci.model.uci".cursor()
+
+-- Read clash_api panel info straight from the config so the "Open External
+-- Panel" button can be rendered on page load, instead of waiting for the 5s
+-- runtime-status poll. Returns scheme/host/port and the /ui/ path (the API
+-- root requires auth; the dashboard lives under /ui/).
+local function read_clash_panel()
+	local raw = fs.readfile("/etc/sing-box/config.json")
+	if not raw then return nil end
+	local data = jsonc.parse(raw)
+	if type(data) ~= "table" then return nil end
+	local ca = (data.experimental or {}).clash_api or {}
+	local ec = ca.external_controller
+	if type(ec) ~= "string" then return nil end
+	ec = ec:gsub("^%s+", ""):gsub("%s+$", "")
+	if ec == "" then return nil end
+	local scheme = "http"
+	if ec:match("^https?://") then
+		scheme = ec:match("^(https?)://")
+		ec = ec:gsub("^https?://", "")
+	end
+	local host, port
+	if ec:match("^%[") then
+		host, port = ec:match("^(%[.-%]):?(%d*)$")
+	else
+		host, port = ec:match("^(.-):(%d+)$")
+		if not host then host, port = ec, "" end
+	end
+	if not port or port == "" then return nil end
+	-- UCI override wins; else default to sing-box's fixed /ui/ when external_ui
+	-- is configured. (external_ui is the local directory, not the URL path.)
+	local ui_path = ""
+	local override = uci:get("singbox", "main", "panel_path")
+	if type(override) == "string" and override:gsub("%s", "") ~= "" then
+		ui_path = override:gsub("^%s+", ""):gsub("%s+$", "")
+		if ui_path:sub(1, 1) ~= "/" then ui_path = "/" .. ui_path end
+		if ui_path:sub(-1) ~= "/" then ui_path = ui_path .. "/" end
+	elseif type(ca.external_ui) == "string" and ca.external_ui:gsub("%s", "") ~= "" then
+		ui_path = "/ui/"
+	end
+	return { scheme = scheme, host = host or "", port = port, ui_path = ui_path }
+end
 
 local m = SimpleForm("singbox", translate("sing-box Dashboard"), translate("Manage sing-box runtime status and resources."))
 m.reset = false
@@ -185,10 +228,29 @@ end
 local panel = m:field(DummyValue, "external_panel", translate("External Panel"))
 panel.rawhtml = true
 function panel.cfgvalue()
-	return [[<div id="sb-panel-wrap" style="display:none;margin-bottom:8px;">
-		<a id="sb-panel-link" class="btn cbi-button cbi-button-action" target="_blank" rel="noopener">]] ..
-		translate("Open External Panel") .. [[</a>
-	</div>]]
+	local p = read_clash_panel()
+	if not p then
+		-- No clash_api configured; nothing to link to.
+		return [[<div id="sb-panel-wrap" style="display:none;"></div>]]
+	end
+	-- Render the button immediately and set its href on load (substituting the
+	-- browser's hostname for wildcard bind addresses). No wait for the poll.
+	return string.format([[
+<div id="sb-panel-wrap" style="margin-bottom:8px;">
+	<a id="sb-panel-link" class="btn cbi-button cbi-button-action" target="_blank" rel="noopener">%s</a>
+</div>
+<script>
+(function(){
+	var scheme=%q, host=%q, port=%q, uipath=%q;
+	var wildcard={ '':1,'0.0.0.0':1,'127.0.0.1':1,'localhost':1,'::':1,'[::]':1,'::1':1,'[::1]':1 };
+	if(wildcard[host]) host=window.location.hostname;
+	if(host.indexOf(':')!==-1 && host.charAt(0)!=='[') host='['+host+']';
+	var a=document.getElementById('sb-panel-link');
+	if(a) a.href = scheme+'://'+host+':'+port+uipath;
+})();
+</script>]],
+	translate("Open External Panel"),
+	p.scheme, p.host, p.port, p.ui_path)
 end
 
 local runtime = m:field(DummyValue, "runtime_info", translate("Runtime Details"))
@@ -280,7 +342,7 @@ function js.cfgvalue()
 			host = '[' + host + ']';
 		}
 		var scheme = data.panel_scheme || 'http';
-		return scheme + '://' + host + ':' + data.panel_port;
+		return scheme + '://' + host + ':' + data.panel_port + (data.panel_ui || '');
 	}
 
 	function render(data){

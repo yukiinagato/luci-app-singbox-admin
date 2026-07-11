@@ -7,3 +7,8 @@ config singbox 'main'
 	# Mirror of the singbox-firewall init enable state (managed from the
 	# Firewall Script tab). '1' = apply nftables.sh on boot.
 	option fw_boot '0'
+	# External Panel URL path. Empty = auto: sing-box serves clash_api's
+	# external_ui at /ui/, so the button uses /ui/ when external_ui is set.
+	# Override only if your dashboard is reachable at a different path
+	# (e.g. behind a reverse proxy). Example:
+	# option panel_path '/dashboard/'

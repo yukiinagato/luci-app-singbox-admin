@@ -4,6 +4,7 @@ local fs = require "nixio.fs"
 local http = require "luci.http"
 local sys = require "luci.sys"
 local jsonc = require "luci.jsonc"
+local uci = require "luci.model.uci".cursor()
 
 local CONFIG_PATH = "/etc/sing-box/config.json"
 local UPDATE_SCRIPT = "/usr/libexec/singbox-admin-update.sh"
@@ -179,11 +180,27 @@ local function read_panel_info()
 		return nil
 	end
 
+	-- Resolve the dashboard URL path. The clash API root requires auth (returns
+	-- {"message":"Unauthorized"}), so the button must point at the UI path.
+	-- Precedence: an explicit UCI override (singbox.main.panel_path) wins;
+	-- otherwise, if clash_api.external_ui is configured, sing-box serves it at
+	-- its fixed /ui/ path. external_ui is only the local directory, not the URL.
+	local ui_path = ""
+	local override = uci:get("singbox", "main", "panel_path")
+	if type(override) == "string" and trim(override) ~= "" then
+		ui_path = trim(override)
+		if ui_path:sub(1, 1) ~= "/" then ui_path = "/" .. ui_path end
+		if ui_path:sub(-1) ~= "/" then ui_path = ui_path .. "/" end
+	elseif type(clash_api.external_ui) == "string" and trim(clash_api.external_ui) ~= "" then
+		ui_path = "/ui/"
+	end
+
 	return {
 		scheme = scheme,
 		host = host or "",
 		port = port,
-		secret = type(clash_api.secret) == "string" and clash_api.secret or ""
+		secret = type(clash_api.secret) == "string" and clash_api.secret or "",
+		ui_path = ui_path
 	}
 end
 
@@ -339,7 +356,8 @@ function action_runtime_status()
 		logs = read_log(200),
 		panel_scheme = panel and panel.scheme or "",
 		panel_host = panel and panel.host or "",
-		panel_port = panel and panel.port or ""
+		panel_port = panel and panel.port or "",
+		panel_ui = panel and panel.ui_path or ""
 	})
 end
 
