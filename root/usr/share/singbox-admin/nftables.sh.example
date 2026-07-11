@@ -44,9 +44,13 @@ nft add set inet singbox bypass_mac '{ type ether_addr; }'
 # ---- 3. Prerouting: divert LAN traffic into sing-box ----
 nft add chain inet singbox prerouting '{ type filter hook prerouting priority mangle; policy accept; }'
 
-# Established transparent sockets: mark + deliver locally. The `meta mark set`
-# is REQUIRED -- without it, tproxy connections break after the first packet.
-nft add rule inet singbox prerouting meta l4proto '{tcp,udp}' socket transparent 1 meta mark set $MARK accept
+# NOTE: do NOT add a `socket transparent 1 meta mark set 1 accept` rule here.
+# When sing-box hijacks DNS locally it binds a transparent socket on
+# <router>:53 to answer UDP queries; a socket-transparent rule then marks the
+# client's UDP DNS packets with fwmark 1, which the policy route sends to `lo`
+# instead of back to the client -- UDP DNS silently times out (TCP DNS still
+# works, so it looks like "new sites are slow to open"). The plain tproxy rules
+# below re-divert every packet idempotently, so that rule is not needed here.
 
 # Only handle traffic entering from the LAN bridge.
 nft add rule inet singbox prerouting iifname != "$LAN" accept
