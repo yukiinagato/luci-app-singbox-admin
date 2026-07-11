@@ -41,6 +41,11 @@ one-click binary updates.
   - **Live firewall state** panel: shows the sing-box-related `nft` ruleset,
     fwmark policy routes, and listening sockets that are *actually loaded* —
     so "what I wrote" vs "what is running" is never ambiguous again.
+  - On first use the live script is **seeded from a template**
+    (`/usr/share/singbox-admin/nftables.sh.example`): a full-tproxy setup that
+    proxies all LAN devices by default and excludes infrastructure (containers/
+    VMs, VoIP, a `bypass_mac` set) — new devices are proxied automatically. An
+    existing `/etc/sing-box/nftables.sh` is never overwritten.
 
 ## Runtime requirements
 

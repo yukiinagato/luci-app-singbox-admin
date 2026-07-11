@@ -5,6 +5,7 @@ local util = require "luci.util"
 local dsp = require "luci.dispatcher"
 
 local script_path = "/etc/sing-box/nftables.sh"
+local template_path = "/usr/share/singbox-admin/nftables.sh.example"
 
 local function app_url(path)
 	return dsp.build_url("admin", "services", "sing-box", path)
@@ -15,9 +16,16 @@ local m = SimpleForm("singbox_script", translate("Firewall Script"),
 m.reset = false
 
 local function ensure_script()
+	-- Seed the live script from the shipped template on first use only; never
+	-- overwrite an existing (possibly customized) file. Runtime-created files
+	-- are also safe from opkg overwrites on upgrade.
 	if not fs.access(script_path) then
 		fs.mkdirr("/etc/sing-box/")
-		fs.writefile(script_path, "#!/bin/sh\n\n# Build your nft ruleset / policy routes here.\n# Make deletes idempotent, e.g.: nft delete table inet singbox 2>/dev/null\n")
+		local seed = fs.access(template_path) and fs.readfile(template_path) or nil
+		if not seed or seed == "" then
+			seed = "#!/bin/sh\n\n# Build your nft ruleset / policy routes here.\n# Make deletes idempotent, e.g.: nft delete table inet singbox 2>/dev/null\n"
+		end
+		fs.writefile(script_path, seed)
 		sys.call(string.format("chmod +x %q", script_path))
 	end
 end

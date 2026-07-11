@@ -1,0 +1,85 @@
+#!/bin/sh
+#
+# sing-box transparent proxy (tproxy) firewall -- default template.
+#
+# Model: proxy ALL LAN devices by default, and EXCLUDE infrastructure by MAC.
+# New devices are proxied automatically; you only maintain the exclusions.
+#
+# This file is a SEED copied to /etc/sing-box/nftables.sh on first use. Edit the
+# live copy in the LuCI "Firewall Script" tab (or directly); it is applied via
+# the plugin's validated, rollback-protected executor.
+#
+# Requires: nftables + kmod-nft-tproxy. sing-box must have a tproxy inbound
+# listening on $PORT and, for domain routing, sniff enabled in its route.
+#
+set -u
+
+LAN="br-lan"      # LAN bridge to capture
+PORT="12345"      # sing-box tproxy inbound port
+MARK="1"          # fwmark used for policy routing
+TABLE="100"       # routing table for local (tproxy) delivery
+
+# ---- 1. Policy routing: marked packets -> local delivery ----
+while ip  rule del fwmark $MARK table $TABLE 2>/dev/null; do :; done
+while ip -6 rule del fwmark $MARK table $TABLE 2>/dev/null; do :; done
+ip  rule add fwmark $MARK table $TABLE
+ip  route replace local default dev lo table $TABLE
+ip -6 rule add fwmark $MARK table $TABLE
+ip -6 route replace local default dev lo table $TABLE
+
+# ---- 2. Fresh table ----
+nft delete table inet singbox 2>/dev/null
+nft add table inet singbox
+
+# Reserved / LAN destinations that must stay direct.
+# If you have a routed IPv6 prefix (PD/ULA) for your LAN, add it to reserved_v6
+# so inter-LAN v6 stays direct, e.g. add  2001:db8:abcd:ef00::/56  below.
+nft add set inet singbox reserved_v4 '{ type ipv4_addr; flags interval; elements = { 127.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 }; }'
+nft add set inet singbox reserved_v6 '{ type ipv6_addr; flags interval; elements = { ::1, fe80::/10, fd00::/8, ff00::/8 }; }'
+
+# Devices that must NOT be proxied. Add MACs here anytime -- no rule edits:
+#   nft add element inet singbox bypass_mac { aa:bb:cc:dd:ee:ff }
+nft add set inet singbox bypass_mac '{ type ether_addr; }'
+
+# ---- 3. Prerouting: divert LAN traffic into sing-box ----
+nft add chain inet singbox prerouting '{ type filter hook prerouting priority mangle; policy accept; }'
+
+# Established transparent sockets: mark + deliver locally. The `meta mark set`
+# is REQUIRED -- without it, tproxy connections break after the first packet.
+nft add rule inet singbox prerouting meta l4proto '{tcp,udp}' socket transparent 1 meta mark set $MARK accept
+
+# Only handle traffic entering from the LAN bridge.
+nft add rule inet singbox prerouting iifname != "$LAN" accept
+
+# Keep LAN/private and router-local destinations direct.
+nft add rule inet singbox prerouting ip  daddr @reserved_v4 accept
+nft add rule inet singbox prerouting ip6 daddr @reserved_v6 accept
+nft add rule inet singbox prerouting fib daddr type local accept
+
+# --- Exclusions: keep infrastructure fully direct (incl. its DNS) ---
+# Containers / VMs stay direct to avoid proxy-in-proxy loops. These OUI matches
+# are safe no-ops if you have no such devices. Common virtualization OUIs:
+#   00:16:3e = Xen/LXC     bc:24:11 = Proxmox VE     00:15:5d = Hyper-V
+#   52:54:00 = QEMU/KVM    00:0c:29 / 00:50:56 = VMware
+nft add rule inet singbox prerouting ether saddr and ff:ff:ff:00:00:00 == 00:16:3e:00:00:00 accept
+nft add rule inet singbox prerouting ether saddr and ff:ff:ff:00:00:00 == bc:24:11:00:00:00 accept
+# Example: keep VoIP phones direct (Yealink 80:5e:c0). Uncomment if needed:
+# nft add rule inet singbox prerouting ether saddr and ff:ff:ff:00:00:00 == 80:5e:c0:00:00:00 accept
+# Manual exclusions (bypass_mac set above).
+nft add rule inet singbox prerouting ether saddr @bypass_mac accept
+
+# --- Default: everyone else -> tproxy into sing-box (v4 + v6) ---
+nft add rule inet singbox prerouting iifname "$LAN" meta nfproto ipv4 meta l4proto '{tcp,udp}' meta mark set $MARK tproxy ip  to :$PORT accept
+nft add rule inet singbox prerouting iifname "$LAN" meta nfproto ipv6 meta l4proto '{tcp,udp}' meta mark set $MARK tproxy ip6 to :$PORT accept
+
+# ---- 4. Forward: clamp MSS to path MTU (helps tunnels/tproxy) ----
+nft add chain inet singbox forward '{ type filter hook forward priority mangle; policy accept; }'
+nft add rule inet singbox forward tcp flags syn tcp option maxseg size set rt mtu
+
+# ---- 5. Output: exclude sing-box's own traffic (placeholder for proxying the
+#         router's own outbound). Only added if the group exists, otherwise nft
+#         cannot resolve the name and would abort the script. ----
+nft add chain inet singbox output '{ type route hook output priority mangle; policy accept; }'
+if grep -q '^singbox-group:' /etc/group 2>/dev/null; then
+	nft add rule inet singbox output meta skgid "singbox-group" accept
+fi
