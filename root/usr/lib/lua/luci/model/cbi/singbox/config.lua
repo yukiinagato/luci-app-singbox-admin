@@ -1,18 +1,42 @@
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 local util = require "luci.util"
+local dsp = require "luci.dispatcher"
 local uci = require "luci.model.uci".cursor()
 
 local config_path = "/etc/sing-box/config.json"
 local check_path = "/tmp/sing-box-config.check.json"
 local check_log = "/tmp/sing-box-check.log"
+local backup_dir = "/etc/sing-box/backups"
 
-local m = SimpleForm("singbox_config", translate("Config Editor"), translate("Edit /etc/sing-box/config.json with validation before saving."))
+local function app_url(path)
+	return dsp.build_url("admin", "services", "sing-box", path)
+end
+
+local m = SimpleForm("singbox_config", translate("Config Editor"), translate("Edit /etc/sing-box/config.json with validation before saving. Every save keeps a timestamped backup you can restore."))
 m.reset = false
 
 if not fs.access(config_path) then
 	fs.mkdirr("/etc/sing-box/")
 	fs.writefile(config_path, "{}\n")
+end
+
+-- Prune backups to the newest `keep` copies.
+local function prune_backups(keep)
+	keep = tonumber(keep) or 10
+	local items = {}
+	if fs.access(backup_dir) then
+		for name in fs.dir(backup_dir) do
+			if name:match("^config%..*%.json$") then
+				local st = fs.stat(backup_dir .. "/" .. name)
+				items[#items + 1] = { name = name, mtime = st and st.mtime or 0 }
+			end
+		end
+	end
+	table.sort(items, function(a, b) return a.mtime > b.mtime end)
+	for i = keep + 1, #items do
+		fs.remove(backup_dir .. "/" .. items[i].name)
+	end
 end
 
 local wrap = m:field(Flag, "config_wrap", translate("Auto Wrap"), translate("Enable line wrapping in editor."))
@@ -30,10 +54,59 @@ meta.rawhtml = true
 function meta.cfgvalue()
 	local st = fs.stat(config_path)
 	local mtime = (st and st.mtime) and os.date("%Y-%m-%d %H:%M:%S", st.mtime) or "-"
-	return "<div style='padding:8px 10px;background:#f8f8f8;border:1px solid #e5e5e5;'>"
+	local html = "<div style='padding:8px 10px;background:#f8f8f8;border:1px solid #e5e5e5;'>"
 		.. "<div><strong>Absolute Path:</strong> " .. util.pcdata(config_path) .. "</div>"
 		.. "<div><strong>Last Modified:</strong> " .. util.pcdata(mtime) .. "</div>"
-		.. "</div>"
+	-- Warn about stray editor swap files (a common source of confusion).
+	for name in fs.dir("/etc/sing-box") do
+		if name:match("%.swp$") or name:match("%.swo$") then
+			html = html .. "<div style='color:#a8071a'><strong>Warning:</strong> stray editor swap file /etc/sing-box/" .. util.pcdata(name) .. " -- an external editor may be open or crashed; remove it to avoid confusion.</div>"
+		end
+	end
+	return html .. "</div>"
+end
+
+-- Restore-from-backup control.
+local restore = m:field(DummyValue, "restore_box", translate("Backups"))
+restore.rawhtml = true
+function restore.cfgvalue()
+	local list_url = util.pcdata(app_url("config_backups"))
+	local restore_url = util.pcdata(app_url("config_restore"))
+	return string.format([[
+<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+	<select id="sb-bk-select" style="min-width:280px"><option value="">Loading backups...</option></select>
+	<button class="btn cbi-button cbi-button-reload" type="button" id="sb-bk-restore">%s</button>
+	<span id="sb-bk-msg" style="color:#666"></span>
+</div>
+<script>
+(function(){
+	var listUrl='%s', restoreUrl='%s';
+	var sel=document.getElementById('sb-bk-select');
+	var msg=document.getElementById('sb-bk-msg');
+	function load(){
+		XHR.get(listUrl,null,function(x,d){
+			if(x.status!==200||!d||!d.backups){ sel.innerHTML='<option value="">(none)</option>'; return; }
+			if(!d.backups.length){ sel.innerHTML='<option value="">(no backups yet)</option>'; return; }
+			sel.innerHTML=d.backups.map(function(b){
+				var t=b.mtime?new Date(b.mtime*1000).toLocaleString():'';
+				return '<option value="'+b.name+'">'+b.name+'  ('+t+')</option>';
+			}).join('');
+		});
+	}
+	document.getElementById('sb-bk-restore').addEventListener('click',function(){
+		var name=sel.value; if(!name){ return; }
+		if(!confirm('Restore '+name+'? Your current config is snapshotted first, and the backup is validated before it replaces config.json.')) return;
+		msg.style.color='#666'; msg.textContent='Restoring...';
+		XHR.post(restoreUrl,{name:name},function(x,d){
+			if(d){ msg.style.color=(x.status===200&&d.ok)?'green':'red'; msg.textContent=d.message||''; }
+			else { msg.style.color='red'; msg.textContent='Restore failed'; }
+		});
+	});
+	load();
+})();
+</script>]],
+	translate("Restore selected"),
+	list_url, restore_url)
 end
 
 local error_box = m:field(DummyValue, "check_error", translate("Validation Output"))
@@ -74,9 +147,18 @@ function cfg.write(self, section, value)
 		return false
 	end
 
+	-- Snapshot the CURRENT config before overwriting, so a valid-but-wrong
+	-- edit can still be undone.
+	local cur = fs.readfile(config_path)
+	if cur and cur ~= value then
+		fs.mkdirr(backup_dir)
+		fs.writefile(string.format("%s/config.%s.json", backup_dir, os.date("%Y%m%d%H%M%S")), cur)
+		prune_backups(uci:get("singbox", "main", "backup_keep") or 10)
+	end
+
 	fs.writefile(config_path, value)
 	fs.writefile(check_log, "")
-	m.message = translate("Configuration saved.")
+	m.message = translate("Configuration saved (previous version backed up).")
 end
 
 local restart = m:field(Button, "restart", translate("Restart sing-box"))

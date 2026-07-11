@@ -1,12 +1,15 @@
 {
     "luci-app-singbox-admin": {
-        "description": "Grant access to sing-box config editor",
+        "description": "Grant access to sing-box config editor, firewall and dashboard",
         "read": {
             "cgi-io": [ "cbi" ],
             "luci": [ "admin/services/sing-box/*" ],
             "file": {
                 "/etc/sing-box/config.json": [ "read" ],
+                "/etc/sing-box/nftables.sh": [ "read" ],
+                "/etc/sing-box/backups/*": [ "read" ],
                 "/tmp/sing-box-check.log": [ "read" ],
+                "/tmp/sing-box-fw*": [ "read" ],
                 "/etc/config/singbox": [ "read" ]
             },
             "ubus": {
@@ -20,12 +23,13 @@
             "luci": [ "admin/services/sing-box/*" ],
             "file": {
                 "/etc/sing-box/*": [ "write" ],
+                "/etc/sing-box/backups/*": [ "write" ],
                 "/tmp/sing-box*": [ "write" ],
                 "/etc/config/singbox": [ "write" ]
             },
             "ubus": {
                 "service": [ "start", "stop", "restart" ],
-                "file": [ "write" ]
+                "file": [ "write", "exec" ]
             },
             "uci": [ "singbox" ]
         }

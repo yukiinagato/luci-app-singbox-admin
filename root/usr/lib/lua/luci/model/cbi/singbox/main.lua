@@ -49,12 +49,40 @@ function restart.write()
 	sys.call("/etc/init.d/sing-box restart >/dev/null 2>&1")
 end
 
+-- Resource + multi-instance health. Answers "is sing-box actually the CPU hog,
+-- and which of several sing-box processes is it?" -- the exact question that
+-- is otherwise easy to get wrong (VSZ != CPU; container instances share the
+-- host PID namespace).
+local health = m:field(DummyValue, "health", translate("Resources & Instances"))
+health.rawhtml = true
+function health.cfgvalue()
+	return [[
+<div style="margin-bottom:6px;color:#666">
+	<span><strong>conntrack:</strong> <span id="sb-conntrack">-</span></span>
+	&nbsp;|&nbsp;
+	<span><strong>clash connections:</strong> <span id="sb-clash-conn">-</span></span>
+	&nbsp;|&nbsp;
+	<span><strong>↓/↑ total:</strong> <span id="sb-clash-traffic">-</span></span>
+</div>
+<div style="max-height:280px;overflow-y:auto;">
+	<table class="table cbi-section-table" style="width:100%;">
+		<thead><tr>
+			<th>PID</th><th>Role</th><th>UID</th><th>CPU%</th><th>RSS</th><th>Command</th>
+		</tr></thead>
+		<tbody id="sb-procs"><tr><td colspan="6">Loading...</td></tr></tbody>
+	</table>
+</div>
+<div style="color:#999;font-size:90%;margin-top:4px;">
+	"managed" = the procd-launched instance this dashboard controls. "container/other" rows are separate sing-box processes (e.g. inside LXC/VMs) that share the host PID list -- don't confuse their CPU with the managed one. CPU% is derived live between refreshes.
+</div>]]
+end
+
 local updater = m:field(DummyValue, "updater", translate("Binary & Platform Management"))
 updater.rawhtml = true
 function updater.cfgvalue()
 	local info_url = util.pcdata(app_url("update_info"))
 	local update_url = util.pcdata(app_url("update_download"))
-	return string.format([[ 
+	return string.format([[
 <div>
 	<div><strong>%s:</strong> <span id="sb-online-version">Loading...</span></div>
 	<div><strong>%s:</strong> <span id="sb-arch-tip">Detecting...</span></div>
@@ -81,7 +109,7 @@ function updater.cfgvalue()
 (function(){
 	var infoUrl = '%s';
 	var updateUrl = '%s';
-	var archAuto = 'amd64';
+	var archAuto = '';
 
 	var versionInput = document.getElementById('sb-version-input');
 	var archSelect = document.getElementById('sb-arch-select');
@@ -102,7 +130,9 @@ function updater.cfgvalue()
 
 		if (!directUrl && (!version || !arch)) {
 			msg.style.color = 'red';
-			msg.textContent = 'Please provide URL or version + architecture.';
+			msg.textContent = (!arch && archSelect.value === 'auto')
+				? 'Architecture not detected -- pick Custom/Manual and enter it (e.g. x86_64), or use a direct URL.'
+				: 'Please provide URL or version + architecture.';
 			return;
 		}
 
@@ -123,11 +153,11 @@ function updater.cfgvalue()
 
 	XHR.get(infoUrl, null, function(x, data){
 		if (x.status !== 200 || !data) return;
-		archAuto = data.auto_arch || 'amd64';
+		archAuto = data.auto_arch || '';
 		var online = document.getElementById('sb-online-version');
 		online.textContent = data.latest ? data.latest : 'Unavailable';
 		var archTip = document.getElementById('sb-arch-tip');
-		archTip.textContent = (data.raw_arch || 'unknown') + ' -> ' + archAuto + ' (' + (data.arch_source || 'auto') + ')';
+		archTip.textContent = (data.raw_arch || 'unknown') + ' -> ' + (archAuto || '(undetected)') + ' (' + (data.arch_source || 'auto') + ')';
 		if (data.latest) {
 			versionInput.value = data.latest;
 		}
@@ -165,7 +195,7 @@ local runtime = m:field(DummyValue, "runtime_info", translate("Runtime Details")
 runtime.rawhtml = true
 function runtime.cfgvalue()
 	return [[
-<div><strong>PID:</strong> <span id="sb-pid">-</span></div>
+<div><strong>PID:</strong> <span id="sb-pid">-</span> <span style="color:#999">(see Resources &amp; Instances for all sing-box processes)</span></div>
 <details id="sb-ports-box" style="margin-top:6px;">
 	<summary><strong>sing-box Active Ports</strong></summary>
 	<div style="max-height:260px;overflow-y:auto;margin-top:6px;">
@@ -200,7 +230,7 @@ function ui_files.cfgvalue()
 	return "<pre>" .. util.pcdata(table.concat(names, "\n")) .. "</pre>"
 end
 
-local logs = m:field(DummyValue, "logs", translate("Logs"), translate("Output from logread -e sing-box"))
+local logs = m:field(DummyValue, "logs", translate("Logs"), translate("Output from logread -e sing-box (falls back to log.output file)"))
 logs.rawhtml = true
 function logs.cfgvalue()
 	return [[<pre id="sb-logs" style="max-height:320px;overflow:auto;margin:0;">Loading...</pre>]]
@@ -216,10 +246,12 @@ local js = m:field(DummyValue, "dashboard_js", " ")
 js.rawhtml = true
 function js.cfgvalue()
 	local status_url = util.pcdata(app_url("runtime_status"))
+	local health_url = util.pcdata(app_url("health"))
 	return [[
 <script>
 (function(){
 	var statusUrl = ']] .. status_url .. [[';
+	var healthUrl = ']] .. health_url .. [[';
 
 	function esc(s) {
 		return String(s == null ? '' : s)
@@ -230,9 +262,13 @@ function js.cfgvalue()
 			.replace(/'/g, '&#39;');
 	}
 
-	// Build the external panel URL from the clash_api port, but use the
-	// hostname the browser is actually connected to. The bind address stored
-	// in config (0.0.0.0 / 127.0.0.1 / ::) is not reachable from the client.
+	function fmtBytes(n){
+		n = Number(n)||0;
+		var u=['B','KB','MB','GB','TB']; var i=0;
+		while(n>=1024 && i<u.length-1){ n/=1024; i++; }
+		return n.toFixed(i?1:0)+' '+u[i];
+	}
+
 	function buildPanelHref(data){
 		if(!data || !data.panel_port) return '';
 		var host = data.panel_host || '';
@@ -241,7 +277,7 @@ function js.cfgvalue()
 			host = window.location.hostname;
 		}
 		if(host.indexOf(':') !== -1 && host.charAt(0) !== '['){
-			host = '[' + host + ']'; // bracket bare IPv6
+			host = '[' + host + ']';
 		}
 		var scheme = data.panel_scheme || 'http';
 		return scheme + '://' + host + ':' + data.panel_port;
@@ -290,8 +326,59 @@ function js.cfgvalue()
 		}
 	}
 
+	// --- health: compute per-process CPU% from cumulative jiffies deltas ---
+	var prev = {};   // pid -> { jiffies, now }
+	function renderHealth(data){
+		if(!data) return;
+		var hz = data.hz || 100;
+		var now = data.now || (Date.now()/1000);
+
+		var ct = document.getElementById('sb-conntrack');
+		if(ct) ct.textContent = (data.conntrack != null ? data.conntrack : '-');
+
+		var cc = document.getElementById('sb-clash-conn');
+		var ctr = document.getElementById('sb-clash-traffic');
+		if(data.clash){
+			if(cc) cc.textContent = data.clash.connections;
+			if(ctr) ctr.textContent = fmtBytes(data.clash.download_total) + ' / ' + fmtBytes(data.clash.upload_total);
+		} else {
+			if(cc) cc.textContent = 'n/a';
+			if(ctr) ctr.textContent = 'n/a';
+		}
+
+		var tb = document.getElementById('sb-procs');
+		if(!tb) return;
+		var rows = data.procs || [];
+		if(!rows.length){ tb.innerHTML = '<tr><td colspan="6">No sing-box process found</td></tr>'; prev={}; return; }
+		var seen = {};
+		tb.innerHTML = rows.map(function(p){
+			seen[p.pid] = 1;
+			var cpu = '…';
+			var pr = prev[p.pid];
+			if(pr && now > pr.now){
+				var pct = ((p.jiffies - pr.jiffies) / hz) / (now - pr.now) * 100;
+				if(pct < 0) pct = 0;
+				cpu = pct.toFixed(1) + '%';
+			}
+			prev[p.pid] = { jiffies: p.jiffies, now: now };
+			var roleColor = p.role === 'managed' ? 'green' : '#999';
+			return '<tr>'
+				+ '<td>' + esc(p.pid) + '</td>'
+				+ "<td style='color:" + roleColor + "'>" + esc(p.role) + '</td>'
+				+ '<td>' + esc(p.uid) + '</td>'
+				+ '<td>' + cpu + '</td>'
+				+ '<td>' + Math.round((p.rss_kb||0)/1024) + ' MB</td>'
+				+ "<td style='font-family:monospace;font-size:88%;word-break:break-all;'>" + esc(p.cmd) + '</td>'
+				+ '</tr>';
+		}).join('');
+		Object.keys(prev).forEach(function(k){ if(!seen[k]) delete prev[k]; });
+	}
+
 	XHR.poll(5, statusUrl, null, function(x, data){
 		if (x.status === 200) render(data);
+	});
+	XHR.poll(5, healthUrl, null, function(x, data){
+		if (x.status === 200) renderHealth(data);
 	});
 })();
 </script>]]

@@ -10,7 +10,10 @@ PKG_LICENSE:=MIT
 
 # LuCI 專用定義
 LUCI_TITLE:=Sing-box Admin Web Interface
-LUCI_DEPENDS:=+sing-box +luci-base
+# nftables is required by the firewall executor. tproxy transparent proxying
+# additionally needs kmod-nft-tproxy at runtime (not forced here to keep the
+# manual .ipk install flexible -- see README).
+LUCI_DEPENDS:=+sing-box +luci-base +nftables
 LUCI_PKGARCH:=all
 
 include $(TOPDIR)/feeds/luci/luci.mk

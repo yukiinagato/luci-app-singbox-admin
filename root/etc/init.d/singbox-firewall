@@ -1,0 +1,39 @@
+#!/bin/sh /etc/rc.common
+#
+# Applies the sing-box firewall script (/etc/sing-box/nftables.sh) at boot and
+# on reload, through the validated + rollback-protected executor. This is what
+# makes the LuCI "Firewall Script" tab actually take effect.
+#
+# Disabled by default: enable it (UI toggle "Apply firewall on boot", or
+# `/etc/init.d/singbox-firewall enable`) only if you want THIS service to own
+# the tproxy ruleset. If your sing-box init already loads its own .nft file,
+# migrate that logic into /etc/sing-box/nftables.sh first to avoid two owners
+# of the same nft table.
+
+START=95
+STOP=10
+
+EXEC="/usr/libexec/singbox-fw.sh"
+
+boot() {
+	# Give sing-box a moment to bind its tproxy port on cold boot.
+	start
+}
+
+start() {
+	[ -x "$EXEC" ] || return 0
+	"$EXEC" apply >/tmp/sing-box-fw.log 2>&1
+}
+
+stop() {
+	[ -x "$EXEC" ] || return 0
+	"$EXEC" flush
+}
+
+reload() {
+	start
+}
+
+restart() {
+	start
+}

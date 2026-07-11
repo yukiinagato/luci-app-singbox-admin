@@ -1,3 +1,9 @@
 config singbox 'main'
 	option enabled '1'
 	option script_wrap '0'
+	option config_wrap '0'
+	# Number of timestamped config.json backups to keep (Config Editor).
+	option backup_keep '10'
+	# Mirror of the singbox-firewall init enable state (managed from the
+	# Firewall Script tab). '1' = apply nftables.sh on boot.
+	option fw_boot '0'
