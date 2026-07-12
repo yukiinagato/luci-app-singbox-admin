@@ -33,6 +33,7 @@ function index()
 	entry({"admin", "services", "sing-box", "fw_state"}, call("action_fw_state")).leaf = true
 	entry({"admin", "services", "sing-box", "fw_apply"}, call("action_fw_apply")).leaf = true
 	entry({"admin", "services", "sing-box", "fw_validate"}, call("action_fw_validate")).leaf = true
+	entry({"admin", "services", "sing-box", "fw_save"}, call("action_fw_save")).leaf = true
 	entry({"admin", "services", "sing-box", "config_backups"}, call("action_config_backups")).leaf = true
 	entry({"admin", "services", "sing-box", "config_restore"}, call("action_config_restore")).leaf = true
 end
@@ -419,6 +420,30 @@ function action_fw_apply()
 		ok = (rc == 0),
 		message = out ~= "" and out or (rc == 0 and "Applied." or "Apply failed.")
 	})
+end
+
+-- Persist the editor content to the firewall script. This mirrors the CBI
+-- form's Save (script.write in cbi/singbox/script.lua) so that the AJAX
+-- Validate/Apply buttons can flush the editor to disk first -- otherwise they
+-- act on the stale on-disk file and unsaved edits are silently lost on refresh.
+function action_fw_save()
+	local value = http.formvalue("script")
+	if type(value) ~= "string" then
+		json_response(400, { ok = false, message = "Missing script content." })
+		return
+	end
+	-- Guard against a runaway paste; the editor is a shell script, not a blob.
+	if #value > 1024 * 1024 then
+		json_response(413, { ok = false, message = "Script too large (>1 MiB)." })
+		return
+	end
+	value = value:gsub("\r\n", "\n")
+	if fs.writefile(FW_SCRIPT, value) == false then
+		json_response(500, { ok = false, message = "Failed to write " .. FW_SCRIPT })
+		return
+	end
+	sys.call(string.format("chmod +x %q", FW_SCRIPT))
+	json_response(200, { ok = true, message = "Saved." })
 end
 
 local function list_backups()

@@ -38,6 +38,10 @@ jobs:
         run: |
           mkdir -p ipk_root/CONTROL
           [ -f "control" ] && cp control ipk_root/CONTROL/
+          # Maintainer scripts (postinst/prerm/postrm) must live in CONTROL/.
+          for s in preinst postinst prerm postrm; do
+            [ -f "$s" ] && cp "$s" ipk_root/CONTROL/
+          done
           [ -d "root" ] && cp -r root/* ipk_root/
           chmod -R 755 ipk_root/
           wget https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build

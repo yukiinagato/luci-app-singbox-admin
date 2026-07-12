@@ -1,0 +1,18 @@
+#!/bin/sh
+# Post-install script (bundled into the ipk's CONTROL/ dir).
+#
+# Runs on the device after install/upgrade. When the package is unpacked into
+# an image rootfs offline (image builder / SDK), IPKG_INSTROOT is set and there
+# is no live LuCI to refresh -- so we skip and let the first boot handle it.
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+
+# Drop LuCI's dispatcher/module caches so newly added controller routes
+# (e.g. the fw_save endpoint) and menu entries are picked up immediately,
+# without the user having to clear caches by hand.
+rm -f  /tmp/luci-indexcache /tmp/luci-indexcache.* 2>/dev/null
+rm -rf /tmp/luci-modulecache 2>/dev/null
+
+# Reload rpcd so this app's ACLs (acl.d/luci-app-singbox-admin.json) are re-read.
+/etc/init.d/rpcd reload 2>/dev/null || killall -HUP rpcd 2>/dev/null
+
+exit 0

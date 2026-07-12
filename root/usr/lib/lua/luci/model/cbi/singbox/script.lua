@@ -95,6 +95,7 @@ function tools.cfgvalue()
 	local state_url = util.pcdata(app_url("fw_state"))
 	local validate_url = util.pcdata(app_url("fw_validate"))
 	local apply_url = util.pcdata(app_url("fw_apply"))
+	local save_url = util.pcdata(app_url("fw_save"))
 	return string.format([[
 <div style="margin:8px 0; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
 	<button class="btn cbi-button" type="button" id="sb-fw-validate">%s</button>
@@ -107,9 +108,17 @@ function tools.cfgvalue()
 </details>
 <script>
 (function(){
-	var stateUrl='%s', validateUrl='%s', applyUrl='%s';
+	var stateUrl='%s', validateUrl='%s', applyUrl='%s', saveUrl='%s';
 	var msg=document.getElementById('sb-fw-msg');
 	function setMsg(t,c){ msg.textContent=t; msg.style.color=c||'#666'; }
+
+	// The editor textarea (the only nftables TextValue on this page). Validate
+	// and Apply act on the on-disk file, so we flush the editor to disk first --
+	// otherwise unsaved edits are silently ignored and lost on the next refresh.
+	function editor(){
+		return document.querySelector('textarea[id*="nftables"]')
+			|| document.querySelector('textarea');
+	}
 
 	function refreshState(){
 		XHR.get(stateUrl,null,function(x,d){
@@ -120,21 +129,36 @@ function tools.cfgvalue()
 		});
 	}
 
+	// Persist the editor content, then run next() on success.
+	function saveThen(next){
+		var ta=editor();
+		if(!ta){ setMsg('Editor textarea not found; use the Save button below.','red'); return; }
+		setMsg('Saving...','#666');
+		XHR.post(saveUrl,{script:ta.value},function(x,d){
+			if(x.status===200&&d&&d.ok){ next(); }
+			else setMsg((d&&d.message)||'Save failed','red');
+		});
+	}
+
 	document.getElementById('sb-fw-validate').addEventListener('click',function(){
-		setMsg('Validating...','#666');
-		XHR.get(validateUrl,null,function(x,d){
-			if(x.status===200&&d){ setMsg(d.message||'', d.ok?'green':'red'); }
-			else setMsg('Validation request failed','red');
+		saveThen(function(){
+			setMsg('Validating...','#666');
+			XHR.get(validateUrl,null,function(x,d){
+				if(x.status===200&&d){ setMsg(d.message||'', d.ok?'green':'red'); }
+				else setMsg('Validation request failed','red');
+			});
 		});
 	});
 
 	document.getElementById('sb-fw-apply').addEventListener('click',function(){
-		if(!confirm('Apply the saved firewall script now? On failure it auto-rolls back to the last good version.')) return;
-		setMsg('Applying...','#666');
-		XHR.post(applyUrl,{},function(x,d){
-			if(d){ setMsg(d.message||'', (x.status===200&&d.ok)?'green':'red'); }
-			else setMsg('Apply request failed','red');
-			refreshState();
+		if(!confirm('Save the editor and apply the firewall script now? On failure it auto-rolls back to the last good version.')) return;
+		saveThen(function(){
+			setMsg('Applying...','#666');
+			XHR.post(applyUrl,{},function(x,d){
+				if(d){ setMsg(d.message||'', (x.status===200&&d.ok)?'green':'red'); }
+				else setMsg('Apply request failed','red');
+				refreshState();
+			});
 		});
 	});
 
@@ -146,9 +170,9 @@ function tools.cfgvalue()
 </script>]],
 	translate("Validate"),
 	translate("Apply now"),
-	translate("Tip: click Save (bottom) first, then Validate / Apply."),
+	translate("Validate / Apply now auto-save the editor first — the Save button is optional."),
 	translate("Live firewall state (what is actually loaded)"),
-	state_url, validate_url, apply_url)
+	state_url, validate_url, apply_url, save_url)
 end
 
 local editor_js = m:field(DummyValue, "editor_js", " ")
