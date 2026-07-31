@@ -19,7 +19,12 @@ LUCI_PKGARCH:=all
 include $(TOPDIR)/feeds/luci/luci.mk
 
 define Package/$(PKG_NAME)/description
-  LuCI support for Sing-box, providing a dashboard, configuration editor, and firewall script management.
+  LuCI web admin for sing-box on OpenWrt: a live dashboard (service state,
+  per-process CPU/RAM, clash-api connections, listening sockets and logs),
+  a config.json editor with validation and timestamped backups/restore, a
+  rollback-protected nftables/tproxy firewall-script manager (validate,
+  apply now, apply on boot), and one-click sing-box binary updates from
+  GitHub releases with architecture auto-detection.
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))

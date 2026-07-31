@@ -1,7 +1,13 @@
 Package: luci-app-singbox-admin
 Version: 0.0.1
-Depends: luci-base, sing-box
+Depends: luci-base, sing-box, nftables
 Section: luci
 Architecture: all
 Maintainer: Yukiinagato
-Description: Sing-box Admin Web Interface
+Description: LuCI web admin for sing-box on OpenWrt
+ Manage sing-box directly from LuCI: a live dashboard (service state,
+ per-process CPU/RAM, clash-api connection count, listening sockets and
+ logs), a config.json editor with sing-box validation and timestamped
+ backups/restore, a rollback-protected nftables/tproxy firewall-script
+ manager (validate, apply now, apply on boot), and one-click sing-box
+ binary updates from GitHub releases with architecture auto-detection.
