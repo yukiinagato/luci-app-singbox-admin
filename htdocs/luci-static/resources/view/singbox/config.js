@@ -1,50 +1,21 @@
 'use strict';
 'require view';
-'require fs';
 'require ui';
 'require uci';
+'require singbox.common as sb';
 
 /*
  * Config Editor — edits /etc/sing-box/config.json through the privileged
  * helper. Every save runs `sing-box check` first and keeps a timestamped
- * backup (restorable below).
+ * backup (restorable below). Shared helpers live in singbox/common.js.
  */
 
-const HELPER = '/usr/libexec/singbox-admin';
-
-function call() {
-	const args = Array.prototype.slice.call(arguments);
-
-	return fs.exec(HELPER, args).then(function(res) {
-		let data = null;
-		try { data = JSON.parse(res.stdout || '{}'); }
-		catch (e) {}
-		if (data == null)
-			return Promise.reject(new Error(_('Helper returned invalid data')));
-		return data;
-	});
-}
-
-function esc(s) {
-	return String(s == null ? '' : s)
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#39;');
-}
+const call = L.bind(sb.call, sb);
+const fmtBytes = sb.fmtBytes;
 
 function fmtTime(t) {
 	if (!t) return '-';
 	return new Date(t * 1000).toLocaleString();
-}
-
-function fmtBytes(n) {
-	n = Number(n) || 0;
-	const u = ['B', 'KB', 'MB', 'GB'];
-	let i = 0;
-	while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-	return n.toFixed(i ? 1 : 0) + ' ' + u[i];
 }
 
 return view.extend({
@@ -149,14 +120,12 @@ return view.extend({
 			msg.style.color = '#666';
 			msg.textContent = _('Validating…');
 
-			/* The editor buffer is delivered to the helper as a single ubus
-			 * file.write, which is size-limited by the ubus transport (well
-			 * below the helper's own cap). Turn the resulting opaque RPC
-			 * error into an actionable message instead of "No related RPC
-			 * reply". */
-			fs.write('/tmp/sing-box-cfg.upload.json', text.value).catch(function(e) {
+			/* Stream the editor buffer via cgi-io (sb.upload), which is not
+			 * bound by the ubus message-size limit that a plain fs.write hits
+			 * on large configs. Surface a readable error if it still fails. */
+			sb.upload('/tmp/sing-box-cfg.upload.json', text.value).catch(function(e) {
 				return Promise.reject(new Error(
-					_('Could not upload the configuration (it may be too large to save through the web UI): ') + (e.message || e)));
+					_('Could not upload the configuration: ') + (e.message || e)));
 			}).then(function() {
 				return call('config', 'save', '--from', '/tmp/sing-box-cfg.upload.json');
 			}).then(function(res) {

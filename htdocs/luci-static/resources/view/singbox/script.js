@@ -4,35 +4,16 @@
 'require ui';
 'require poll';
 'require uci';
+'require singbox.common as sb';
 
 /*
  * Firewall Script — edits /etc/sing-box/nftables.sh and applies it through
- * the validated, rollback-protected executor.
+ * the validated, rollback-protected executor. Shared helpers live in
+ * singbox/common.js.
  */
 
-const HELPER = '/usr/libexec/singbox-admin';
-
-function call() {
-	const args = Array.prototype.slice.call(arguments);
-
-	return fs.exec(HELPER, args).then(function(res) {
-		let data = null;
-		try { data = JSON.parse(res.stdout || '{}'); }
-		catch (e) {}
-		if (data == null)
-			return Promise.reject(new Error(_('Helper returned invalid data')));
-		return data;
-	});
-}
-
-function esc(s) {
-	return String(s == null ? '' : s)
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#39;');
-}
+const call = L.bind(sb.call, sb);
+const esc = sb.esc;
 
 return view.extend({
 	handleSaveApply: null,
@@ -104,13 +85,12 @@ return view.extend({
 			});
 		};
 
-		/* Persist editor content to a temp file the helper can read. The
-		 * write goes over ubus, which is size-limited; surface an actionable
-		 * error rather than an opaque RPC failure if the script is too big. */
+		/* Stream editor content via cgi-io (sb.upload), avoiding the ubus
+		 * message-size limit a plain fs.write would hit on large scripts. */
 		const saveEditor = function() {
-			return fs.write('/tmp/sing-box-fw.upload.sh', text.value).catch(function(e) {
+			return sb.upload('/tmp/sing-box-fw.upload.sh', text.value).catch(function(e) {
 				return Promise.reject(new Error(
-					_('Could not upload the script (it may be too large to save through the web UI): ') + (e.message || e)));
+					_('Could not upload the script: ') + (e.message || e)));
 			}).then(function() {
 				return call('fw', 'save', '--from', '/tmp/sing-box-fw.upload.sh');
 			});

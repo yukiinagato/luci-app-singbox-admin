@@ -1,54 +1,21 @@
 'use strict';
 'require view';
-'require fs';
 'require ui';
 'require poll';
-'require uci';
+'require singbox.common as sb';
 
 /*
  * sing-box Dashboard — modern LuCI JS view.
  *
  * All privileged operations go through the ACL-guarded helper
  * /usr/libexec/singbox-admin (rpcd file.exec); see
- * root/usr/libexec/singbox-admin for the JSON contract.
+ * root/usr/libexec/singbox-admin for the JSON contract. Shared helpers
+ * (call/esc/fmtBytes) live in singbox/common.js.
  */
 
-const HELPER = '/usr/libexec/singbox-admin';
-
-function call() {
-	const args = Array.prototype.slice.call(arguments);
-
-	return fs.exec(HELPER, args).then(function(res) {
-		let data = null;
-
-		try {
-			data = JSON.parse(res.stdout || '{}');
-		}
-		catch (e) {}
-
-		if (data == null)
-			return Promise.reject(new Error(_('Helper returned invalid data')));
-
-		return data;
-	});
-}
-
-function esc(s) {
-	return String(s == null ? '' : s)
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#39;');
-}
-
-function fmtBytes(n) {
-	n = Number(n) || 0;
-	const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-	let i = 0;
-	while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-	return n.toFixed(i ? 1 : 0) + ' ' + u[i];
-}
+const call = L.bind(sb.call, sb);
+const esc = sb.esc;
+const fmtBytes = sb.fmtBytes;
 
 function buildPanelHref(d) {
 	if (!d.panel_port)

@@ -491,6 +491,23 @@ function read_log(lines) {
 	return 'No sing-box logs found (service may log to stderr/procd; check \'logread\' or set log.output in config.json).';
 }
 
+/* PID string of the procd-managed sing-box instance (the first instance that
+ * reports one), or null. Shared by find_singbox_pid() and collect_processes()
+ * so both always agree on which process is the "managed" one. */
+function get_managed_pid() {
+	const svc = read_json_cmd('ubus call service list \'{"name":"sing-box"}\' 2>/dev/null');
+
+	if (svc && type(svc['sing-box']) == 'object' &&
+	    type(svc['sing-box'].instances) == 'object') {
+		for (let k, inst in svc['sing-box'].instances) {
+			if (type(inst) == 'object' && inst.pid != null)
+				return '' + inst.pid;
+		}
+	}
+
+	return null;
+}
+
 /* Enumerate every sing-box process on the host (including ones inside LXC/
  * VM containers sharing the host PID namespace). Reports cumulative CPU
  * jiffies; the browser derives rates between polls -- no server sleep. */
@@ -498,16 +515,7 @@ function collect_processes() {
 	const procs = [];
 
 	/* Authoritative PID of the procd-managed instance, if we can get it. */
-	let managed_pid = null;
-	const svc = read_json_cmd('ubus call service list \'{"name":"sing-box"}\' 2>/dev/null');
-
-	if (svc && type(svc['sing-box']) == 'object' &&
-	    type(svc['sing-box'].instances) == 'object') {
-		for (let k, inst in svc['sing-box'].instances) {
-			if (type(inst) == 'object' && inst.pid != null)
-				managed_pid = '' + inst.pid;
-		}
-	}
+	const managed_pid = get_managed_pid();
 
 	const pids = fs.lsdir('/proc') || [];
 
@@ -592,15 +600,10 @@ function collect_processes() {
  * skips zombies. busybox `pidof sing-box` is unusable here: as a busybox
  * applet it matches its own argv and always reports itself. */
 function find_singbox_pid() {
-	const svc = read_json_cmd('ubus call service list \'{"name":"sing-box"}\' 2>/dev/null');
+	const managed = get_managed_pid();
 
-	if (svc && type(svc['sing-box']) == 'object' &&
-	    type(svc['sing-box'].instances) == 'object') {
-		for (let k, inst in svc['sing-box'].instances) {
-			if (type(inst) == 'object' && inst.pid != null)
-				return '' + inst.pid;
-		}
-	}
+	if (managed != null)
+		return managed;
 
 	for (let pid in (fs.lsdir('/proc') || [])) {
 		if (match(pid, /^[0-9]+$/) == null)
