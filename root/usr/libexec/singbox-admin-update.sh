@@ -2,18 +2,20 @@
 
 # sing-box updater for OpenWrt.
 #
-# Default path installs the official OpenWrt package:
-#     sing-box_<version>_openwrt_<arch>.ipk
-# where <arch> is the OpenWrt package architecture (opkg print-architecture),
-# e.g. x86_64, aarch64_cortex-a53, mipsel_24kc. These are musl builds, and
-# opkg validates the package architecture on install, so an incompatible
-# download is refused before anything is touched.
+# Supports both package managers found across OpenWrt releases:
+#   - opkg (OpenWrt <= 24.10): installs the official
+#         sing-box_<version>_openwrt_<arch>.ipk        (musl build)
+#   - apk  (OpenWrt mainline >= 25.x / snapshots): installs the official
+#         sing-box_<version>_openwrt_<arch>.apk        (same build, apk format)
+# where <arch> is the OpenWrt package architecture, e.g. x86_64,
+# aarch64_cortex-a53, mipsel_24kc. opkg/apk validate the architecture on
+# install, so an incompatible download is refused before anything is touched.
 #
-# A custom --url may point to either an .ipk (installed via opkg) or a
-# .tar.gz (raw binary, swapped in with a pre-flight executability test and
-# automatic rollback). The .tar.gz path is kept for advanced/manual use; note
-# that upstream's plain linux-<arch> tarballs are glibc-linked and will NOT run
-# on a musl OpenWrt -- prefer the .ipk or a *-musl tarball.
+# A custom --url may point to an .ipk, an .apk, or a .tar.gz (raw binary,
+# swapped in with a pre-flight executability test and automatic rollback).
+# The .tar.gz path is kept for advanced/manual use; note that upstream's
+# plain linux-<arch> tarballs are glibc-linked and will NOT run on a musl
+# OpenWrt -- prefer the .ipk/.apk or a *-musl tarball.
 
 set -eu
 
@@ -27,6 +29,19 @@ URL=""
 
 log() { echo "$@"; }
 fail() { echo "$@" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Package manager detection: opkg wins when both exist (conservative -- a
+# leftover apk on an opkg system may lack configured repositories).
+# ---------------------------------------------------------------------------
+PKG_MGR=""
+if command -v opkg >/dev/null 2>&1; then
+	PKG_MGR="opkg"
+elif command -v apk >/dev/null 2>&1; then
+	PKG_MGR="apk"
+else
+	fail "No package manager found (need opkg or apk) for .ipk/.apk installs."
+fi
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -49,8 +64,11 @@ else
 	case "$ARCH" in
 		""|*[!a-z0-9_-]*) fail "Invalid architecture" ;;
 	esac
-	# OpenWrt package for this arch (musl, opkg-installable).
-	URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box_${VERSION}_openwrt_${ARCH}.ipk"
+	# Official package for this arch (musl, installable by opkg AND apk).
+	case "$PKG_MGR" in
+		opkg) URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box_${VERSION}_openwrt_${ARCH}.ipk" ;;
+		apk)  URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box_${VERSION}_openwrt_${ARCH}.apk" ;;
+	esac
 fi
 
 TMPDIR="$(mktemp -d /tmp/singbox-update.XXXXXX)"
@@ -63,10 +81,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # --- download --------------------------------------------------------------
-# Keep the original extension so we can dispatch on it.
+# Keep the original extension so we can dispatch on it (.ipk / .apk / other).
 case "$URL" in
-	*.ipk) DLFILE="$TMPDIR/sing-box.ipk" ;;
-	*)     DLFILE="$TMPDIR/sing-box.tar.gz" ;;
+	*.ipk)  DLFILE="$TMPDIR/sing-box.ipk" ;;
+	*.apk)  DLFILE="$TMPDIR/sing-box.apk" ;;
+	*)      DLFILE="$TMPDIR/sing-box.tar.gz" ;;
 esac
 
 log "Downloading $URL"
@@ -78,27 +97,34 @@ fi
 [ -s "$DLFILE" ] || fail "Downloaded file is empty."
 
 # ===========================================================================
-# Path 1: OpenWrt package (.ipk) -- let opkg do arch validation + install.
+# Path 1b: apk package (OpenWrt mainline) -- apk validates arch on install.
 # ===========================================================================
-install_ipk() {
-	command -v opkg >/dev/null 2>&1 || fail "opkg not found; cannot install .ipk."
+install_apk() {
+	command -v apk >/dev/null 2>&1 || fail "apk not found; cannot install .apk."
 
 	OLD_VER="$("$TARGET" version 2>/dev/null | head -n 1 || true)"
 
 	WAS_RUNNING=0
 	if "$INIT" status >/dev/null 2>&1; then
 		WAS_RUNNING=1
+		"$INIT" stop >/dev/null 2>&1 || true
 	fi
 
-	# opkg refuses a package whose Architecture does not match this device,
-	# so an incompatible download cannot brick the install here.
-	if ! OPKG_OUT="$(opkg install --force-reinstall --force-downgrade "$DLFILE" 2>&1)"; then
-		echo "$OPKG_OUT" >&2
-		case "$OPKG_OUT" in
-			*rch*) fail "opkg refused the package (architecture mismatch). Pick the arch that matches 'opkg print-architecture'." ;;
-			*)     fail "opkg install failed." ;;
-		esac
+	# apk refuses a package whose architecture does not match this device.
+	# --allow-untrusted: upstream release apks are not signed with the
+	# device's repo keys (same as manual upstream install instructions).
+	if ! APK_OUT="$(apk add --allow-untrusted --force-overwrite "$DLFILE" 2>&1)"; then
+		echo "$APK_OUT" >&2
+		fail "apk add failed (architecture mismatch or missing deps?)."
 	fi
+
+	post_install_verify "$OLD_VER"
+}
+
+# Shared post-install verification for package installs (.ipk / .apk):
+# binary runs, config still validates, service comes back if it was running.
+post_install_verify() {
+	OLD_VER="${1:-}"
 
 	# Sanity-check the freshly installed binary.
 	"$TARGET" version >/dev/null 2>&1 || fail "Installed binary does not run."
@@ -118,9 +144,37 @@ install_ipk() {
 	fi
 
 	NEW_VER="$("$TARGET" version 2>/dev/null | head -n 1 || true)"
-	log "Installed via opkg: ${OLD_VER:-none} -> ${NEW_VER:-unknown}"
+	log "Installed via ${PKG_MGR}: ${OLD_VER:-none} -> ${NEW_VER:-unknown}"
 	[ -n "$CFG_WARN" ] && log "$CFG_WARN"
 	log "Updated successfully from $URL"
+}
+
+# ===========================================================================
+# Path 1: opkg package (.ipk) -- let opkg do arch validation + install.
+# ===========================================================================
+install_ipk() {
+	command -v opkg >/dev/null 2>&1 || fail "opkg not found; cannot install .ipk."
+
+	mkdir -p /var/lock
+
+	OLD_VER="$("$TARGET" version 2>/dev/null | head -n 1 || true)"
+
+	WAS_RUNNING=0
+	if "$INIT" status >/dev/null 2>&1; then
+		WAS_RUNNING=1
+	fi
+
+	# opkg refuses a package whose Architecture does not match this device,
+	# so an incompatible download cannot brick the install here.
+	if ! OPKG_OUT="$(opkg install --force-reinstall --force-downgrade "$DLFILE" 2>&1)"; then
+		echo "$OPKG_OUT" >&2
+		case "$OPKG_OUT" in
+			*rch*) fail "opkg refused the package (architecture mismatch). Pick the arch that matches 'opkg print-architecture'." ;;
+			*)     fail "opkg install failed." ;;
+		esac
+	fi
+
+	post_install_verify "$OLD_VER"
 }
 
 # ===========================================================================
@@ -192,6 +246,15 @@ install_tarball() {
 }
 
 case "$DLFILE" in
-	*.ipk) install_ipk ;;
-	*)     install_tarball ;;
+	*.ipk)
+		command -v opkg >/dev/null 2>&1 || fail "Downloaded .ipk but opkg is not available on this system; pick the .apk asset or a .tar.gz."
+		install_ipk
+		;;
+	*.apk)
+		command -v apk >/dev/null 2>&1 || fail "Downloaded .apk but apk is not available on this system."
+		install_apk
+		;;
+	*)
+		install_tarball
+		;;
 esac

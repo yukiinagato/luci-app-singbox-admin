@@ -1,37 +1,37 @@
 {
     "luci-app-singbox-admin": {
-        "description": "Grant access to sing-box config editor, firewall and dashboard",
+        "description": "Grant access to the sing-box dashboard, config editor and firewall script management",
         "read": {
-            "cgi-io": [ "cbi" ],
-            "luci": [ "admin/services/sing-box/*" ],
+            "cgi-io": [ "exec" ],
             "file": {
                 "/etc/sing-box/config.json": [ "read" ],
                 "/etc/sing-box/nftables.sh": [ "read" ],
                 "/etc/sing-box/backups/*": [ "read" ],
-                "/tmp/sing-box-check.log": [ "read" ],
-                "/tmp/sing-box-fw*": [ "read" ],
+                "/etc/sing-box/.nftables.good.sh": [ "read" ],
+                "/tmp/sing-box*": [ "read" ],
+                "/usr/libexec/singbox-fw.sh": [ "exec" ],
+                "/usr/libexec/singbox-admin": [ "exec" ],
                 "/etc/config/singbox": [ "read" ]
             },
+            "uci": [ "singbox" ],
             "ubus": {
-                "service": [ "list" ],
-                "file": [ "read", "list" ]
-            },
-            "uci": [ "singbox" ]
+                "service": [ "list" ]
+            }
         },
         "write": {
-            "cgi-io": [ "cbi" ],
-            "luci": [ "admin/services/sing-box/*" ],
+            "cgi-io": [ "exec" ],
             "file": {
                 "/etc/sing-box/*": [ "write" ],
                 "/etc/sing-box/backups/*": [ "write" ],
                 "/tmp/sing-box*": [ "write" ],
-                "/etc/config/singbox": [ "write" ]
+                "/etc/config/singbox": [ "write" ],
+                "/usr/libexec/singbox-admin": [ "exec" ],
+                "/usr/libexec/singbox-fw.sh": [ "exec" ]
             },
+            "uci": [ "singbox" ],
             "ubus": {
-                "service": [ "start", "stop", "restart" ],
-                "file": [ "write", "exec" ]
-            },
-            "uci": [ "singbox" ]
+                "service": [ "start", "stop", "restart" ]
+            }
         }
     }
 }

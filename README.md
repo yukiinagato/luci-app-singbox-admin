@@ -6,6 +6,22 @@ A LuCI web interface for [sing-box](https://github.com/SagerNet/sing-box) on
 OpenWrt / ImmortalWrt: dashboard, config editor, firewall-script management, and
 one-click binary updates.
 
+## Supported OpenWrt versions
+
+| OpenWrt | Package manager | Package format | Status |
+|---|---|---|---|
+| 23.05 / 24.10 (and ImmortalWrt equivalents) | opkg | `.ipk` | supported |
+| 25.12 / master snapshot | apk | `.apk` | supported |
+| ≤ 21.02 | opkg | — | **not supported** (no client-side LuCI views) |
+
+The app is a **modern JS LuCI app**: client-side views
+(`/www/luci-static/resources/view/singbox/*.js`), menu registration via
+`/usr/share/luci/menu.d/`, and a single privileged backend helper
+`/usr/libexec/singbox-admin` written in [ucode](https://ucode.mein.io/)
+(already shipped with `luci-base`). There is **no Lua controller and no
+`luci-compat` dependency**, and all backend access is gated by the rpcd ACL in
+`/usr/share/rpcd/acl.d/luci-app-singbox-admin.json`.
+
 ## Features
 
 **Dashboard** (`admin/services/sing-box/main`)
@@ -17,8 +33,12 @@ one-click binary updates.
   connection/traffic totals. This makes "is sing-box actually the CPU hog, and
   which sing-box?" answerable at a glance — VSZ is not CPU, and container
   instances are not your managed one.
-- Binary & platform management: detects the OpenWrt package arch and installs
-  the matching `sing-box_<ver>_openwrt_<arch>.ipk`, or a custom URL.
+- Binary & platform management: detects the package manager (opkg or apk) and
+  the OpenWrt package arch, then installs the matching upstream
+  `sing-box_<ver>_openwrt_<arch>.ipk` / `.apk` — or a custom URL (`.ipk`,
+  `.apk`, or a plain tarball with try-run + rollback). Downloads run
+  asynchronously with live log polling, so long downloads no longer hit the
+  ubus 30 s timeout.
 - External clash panel link, active-port list, logs.
 
 **Config Editor** (`admin/services/sing-box/config`)
@@ -71,7 +91,33 @@ nft table. Pick one:
 - Or leave your init as-is and keep *Apply firewall on boot* **off** (default),
   using the Firewall tab only to inspect live state.
 
+## Install
+
+Grab the artifact matching your system from the
+[Releases](../../releases) page:
+
+```sh
+# OpenWrt 23.05 / 24.10 (opkg)
+opkg install luci-app-singbox-admin_*_all.ipk
+
+# OpenWrt 25.12 / master snapshot (apk)
+apk add --allow-untrusted luci-app-singbox-admin_*_all.apk
+```
+
+`--allow-untrusted` is needed because the CI-built `.apk` is unsigned (the same
+applies to sing-box's own upstream `.apk` releases). After install the LuCI
+pages appear under **Services → Sing-box设置** — no cache clearing needed
+(handled by the post-install script).
+
 ## Build
 
-CI builds an `.ipk` on every push/tag (see `.github/workflows/build.yml`).
-Install with `opkg install luci-app-singbox-admin_*.ipk`.
+CI builds both formats on every push/tag (see `.github/workflows/build.yml`):
+
+- `.ipk` via OpenWrt's `ipkg-build` script;
+- `.apk` via `apk mkpkg` from a host build of
+  [apk-tools](https://gitlab.alpinelinux.org/alpine/apk-tools) v3, using the
+  same metadata layout as OpenWrt mainline's `package-pack.mk`
+  (`arch:noarch`, opkg `postinst` mapped to the `post-install` script slot).
+
+The `Makefile` also builds in the normal OpenWrt buildroot/SDK feed flow
+(`luci.mk` installs `htdocs/` to `/www` and `root/` to `/`).

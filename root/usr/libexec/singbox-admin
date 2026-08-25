@@ -1,0 +1,1079 @@
+#!/usr/bin/ucode
+/*
+ * singbox-admin - privileged backend for the LuCI sing-box admin UI.
+ *
+ * The LuCI views (htdocs/luci-static/resources/view/singbox/*.js) call this
+ * helper through rpcd's file.exec, which is restricted by the ACL in
+ * usr/share/rpcd/acl.d/luci-app-singbox-admin.json. Every command prints a
+ * single JSON object to stdout ("ok" boolean plus payload/message) and exits
+ * 0 on success, 1 on failure. Callers should parse stdout regardless of the
+ * exit code.
+ *
+ * This replaces the former Lua controller endpoints; the logic is a direct
+ * port of root/usr/lib/lua/luci/controller/singbox.lua @ v3.1.3.
+ */
+
+'use strict';
+
+const fs = require('fs');
+const uci_mod = require('uci');
+
+const CONFIG_PATH = '/etc/sing-box/config.json';
+const UPDATE_SCRIPT = '/usr/libexec/singbox-admin-update.sh';
+const FW_SCRIPT = '/etc/sing-box/nftables.sh';
+const FW_TEMPLATE = '/usr/share/singbox-admin/nftables.sh.example';
+const FW_EXEC = '/usr/libexec/singbox-fw.sh';
+const BACKUP_DIR = '/etc/sing-box/backups';
+const CHECK_PATH = '/tmp/sing-box-config.check.json';
+const CHECK_LOG = '/tmp/sing-box-check.log';
+const UPDATE_LOG = '/tmp/sing-box-update.log';
+const UPDATE_PID = '/tmp/sing-box-update.pid';
+
+const SUBCOMMANDS = [
+	'status', 'health', 'service',
+	'update-info', 'update-start', 'update-status',
+	'fw', 'config'
+];
+
+/* ---------------------------------------------------------------- utils */
+
+function shq(s) {
+	return "'" + replace('' + s, /'/g, "'\\''") + "'";
+}
+
+function out(obj) {
+	printf('%J\n', obj);
+}
+
+function ok(payload) {
+	payload = (payload != null) ? payload : {};
+	payload.ok = true;
+	out(payload);
+	exit(0);
+}
+
+function fail(message, payload) {
+	payload = (payload != null) ? payload : {};
+	payload.ok = false;
+	payload.message = message;
+	out(payload);
+	exit(1);
+}
+
+/* Run a command through sh -c, capturing combined output. Exit code is not
+ * available this way; use run_rc()/run_logged() when the status matters. */
+function run_capture(cmd) {
+	const fp = fs.popen(cmd, 'r');
+
+	if (!fp)
+		return '';
+
+	const buf = fp.read('all');
+	fp.close();
+
+	return (buf != null) ? buf : '';
+}
+
+/* Run a command through sh -c and return its exit code. */
+function run_rc(cmd) {
+	return system(cmd);
+}
+
+/* Run a command redirecting output into a file; returns exit code. */
+function run_logged(cmd, logfile) {
+	return system(sprintf('%s >%s 2>&1', cmd, shq(logfile)));
+}
+
+function read_json_file(path) {
+	const raw = fs.readfile(path);
+
+	if (raw == null || raw == '')
+		return null;
+
+	try {
+		const data = json(raw);
+
+		return (type(data) == 'object') ? data : null;
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function read_json_cmd(cmd) {
+	const body = run_capture(cmd);
+
+	if (body == '')
+		return null;
+
+	try {
+		return json(body);
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function stamp() {
+	const t = localtime();
+
+	return sprintf('%04d%02d%02d%02d%02d%02d',
+		t.year, t.mon, t.mday, t.hour, t.min, t.sec);
+}
+
+function uci_get(config, section, option) {
+	try {
+		const cursor = uci_mod.cursor();
+
+		return cursor.get(config, section, option);
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+function uci_set(config, section, option, value) {
+	const cursor = uci_mod.cursor();
+	cursor.set(config, section, option, value);
+	cursor.save(config);
+	cursor.commit(config);
+}
+
+function sanitize_version(v) {
+	v = replace(trim((v == null) ? '' : '' + v), /^v/, '');
+
+	if (match(v, /^[0-9][0-9A-Za-z._%-]*$/))
+		return v;
+
+	return null;
+}
+
+function sanitize_arch(a) {
+	a = lc(trim((a == null) ? '' : '' + a));
+
+	if (match(a, /^[a-z0-9_-]+$/))
+		return a;
+
+	return null;
+}
+
+function sanitize_url(u) {
+	u = trim((u == null) ? '' : '' + u);
+
+	if (u == '')
+		return null;
+
+	/* POSIX ERE: no \w, so spell out the class; deliberately excludes
+	 * quotes/brackets which have no business in a download URL. */
+	if (match(u, /^https?:\/\/[0-9A-Za-z._~:/?#@!$&()*+,;=%-]+$/))
+		return u;
+
+	return null;
+}
+
+function parse_opts(args) {
+	const opts = {};
+	const known = { '--from': 1, '--url': 1, '--version': 1, '--arch': 1, '--name': 1 };
+
+	for (let i = 0; i < length(args); i++) {
+		const key = args[i];
+
+		if (!known[key])
+			continue;
+
+		if (i + 1 >= length(args))
+			fail(sprintf('Missing value for %s.', key));
+
+		opts[key] = args[i + 1];
+		i++;
+	}
+
+	return opts;
+}
+
+/* --------------------------------------------------------- platform info */
+
+function get_version_output() {
+	const o = trim(run_capture('/usr/bin/sing-box version 2>&1'));
+
+	/* Treat "not found"/"error" shells noise as unknown */
+	if (o == '' || index(o, 'not found') >= 0)
+		return 'unknown';
+
+	return o;
+}
+
+function detect_raw_arch() {
+	let arch = trim(run_capture('uci -q get lucistat.system.arch 2>/dev/null'));
+
+	if (arch != '')
+		return [arch, 'uci:lucistat.system.arch'];
+
+	const board = read_json_cmd('ubus call system board 2>/dev/null');
+	arch = trim((board && (board.architecture || board.cpu_arch)) || '');
+
+	if (arch != '')
+		return [arch, 'ubus:system.board'];
+
+	arch = trim(run_capture('uname -m 2>/dev/null'));
+
+	if (arch != '')
+		return [arch, 'uname -m'];
+
+	return ['unknown', 'fallback'];
+}
+
+/* The sing-box release assets named sing-box_<ver>_openwrt_<arch>.ipk|.apk
+ * use the OpenWrt package architecture (e.g. "x86_64", "aarch64_generic").
+ * opkg reports it via print-architecture; apk-based systems (OpenWrt
+ * mainline) via --print-arch -- same string, no mapping table needed. */
+function detect_opkg_arch() {
+	const lines = split(run_capture('opkg print-architecture 2>/dev/null'), '\n');
+	let best = null;
+	let best_prio = -1;
+
+	for (let line in lines) {
+		const m = match(line, /^[[:space:]]*arch[[:space:]]+([^[:space:]]+)[[:space:]]+([0-9]+)[[:space:]]*$/);
+
+		if (!m || m[1] == 'all' || m[1] == 'noarch')
+			continue;
+
+		const prio = int(m[2]) || 0;
+
+		if (prio >= best_prio) {
+			best = m[1];
+			best_prio = prio;
+		}
+	}
+
+	return best;
+}
+
+function detect_apk_arch() {
+	const o = trim(run_capture('apk --print-arch 2>/dev/null'));
+
+	return (o != '' && o != null) ? o : null;
+}
+
+function detect_platform_arch() {
+	const raw = detect_raw_arch();
+	const opkg = detect_opkg_arch();
+	const openwrt = opkg || detect_apk_arch();
+
+	if (openwrt != null)
+		return [raw[0], openwrt, (opkg != null) ? 'opkg print-architecture' : 'apk --print-arch'];
+
+	/* Fallback: derive a plausible package arch from the CPU name when no
+	 * package manager is available. NOTE: this must be an OpenWrt package
+	 * arch (e.g. x86_64), never "amd64" -- there is no sing-box
+	 * openwrt_amd64 asset. */
+	const a = lc(raw[0] || '');
+
+	if (index(a, 'x86_64') >= 0 || a == 'amd64')
+		return [raw[0], 'x86_64', 'uname (fallback)'];
+	else if (index(a, 'aarch64') >= 0 || a == 'arm64')
+		return [raw[0], 'aarch64_generic', 'uname (fallback)'];
+	else if (index(a, 'riscv64') >= 0)
+		return [raw[0], 'riscv64_generic', 'uname (fallback)'];
+
+	return [raw[0], '', 'unknown'];
+}
+
+/* ------------------------------------------------------------ panel info */
+
+/* Returns scheme/host/port/secret/ui_path parsed from experimental.clash_api
+ * in the sing-box configuration. */
+function read_panel_info() {
+	if (!fs.access(CONFIG_PATH))
+		return null;
+
+	const data = read_json_file(CONFIG_PATH);
+
+	if (!data)
+		return null;
+
+	const experimental = data.experimental || {};
+	const clash_api = experimental.clash_api || {};
+	let ec = clash_api.external_controller;
+
+	if (type(ec) != 'string' || trim(ec) == '')
+		return null;
+
+	ec = trim(ec);
+
+	let scheme = 'http';
+	const scheme_m = match(ec, /^(https?):\/\/(.+)$/);
+
+	if (scheme_m) {
+		scheme = scheme_m[1];
+		ec = scheme_m[2];
+	}
+
+	/* Split host:port. POSIX ERE has no lazy quantifiers, so bracketed IPv6
+	 * is parsed manually and plain hosts use a greedy last-colon split
+	 * (which also copes with unbracketed IPv6 like ::1:9090 poorly -- those
+	 * must use brackets anyway to be parseable). */
+	let host = '';
+	let port = '';
+
+	if (substr(ec, 0, 1) == '[') {
+		const close = index(ec, ']');
+
+		if (close > 0) {
+			host = substr(ec, 0, close + 1);
+
+			const rest = trim(substr(ec, close + 1));
+
+			port = (substr(rest, 0, 1) == ':') ? substr(rest, 1) : rest;
+
+			if (match(port, /^[0-9]+$/) == null)
+				port = '';
+		}
+	}
+	else {
+		const cp = rindex(ec, ':');
+
+		if (cp > 0) {
+			host = substr(ec, 0, cp);
+			port = substr(ec, cp + 1);
+
+			if (match(port, /^[0-9]+$/) == null) {
+				host = ec;
+				port = '';
+			}
+		}
+		else {
+			host = ec;
+			port = '';
+		}
+	}
+
+	if (port == null || port == '')
+		return null;
+
+	/* Resolve the dashboard URL path. The clash API root requires auth, so a
+	 * link must point at the UI path. Precedence: explicit UCI override
+	 * (singbox.main.panel_path) wins; otherwise, when clash_api.external_ui
+	 * is configured, sing-box serves it at its fixed /ui/ path. */
+	let ui_path = '';
+	const override = uci_get('singbox', 'main', 'panel_path');
+
+	if (type(override) == 'string' && trim(override) != '') {
+		ui_path = trim(override);
+
+		if (substr(ui_path, 0, 1) != '/')
+			ui_path = '/' + ui_path;
+
+		if (substr(ui_path, length(ui_path) - 1) != '/')
+			ui_path = ui_path + '/';
+	}
+	else if (type(clash_api.external_ui) == 'string' && trim(clash_api.external_ui) != '') {
+		ui_path = '/ui/';
+	}
+
+	return {
+		scheme: scheme,
+		host: host,
+		port: port,
+		secret: (type(clash_api.secret) == 'string') ? clash_api.secret : '',
+		ui_path: ui_path
+	};
+}
+
+/* Query the clash_api (used by sing-box for stats). Reachable on loopback
+ * regardless of the configured bind address. Returns parsed JSON or null. */
+function clash_get(path) {
+	const panel = read_panel_info();
+
+	if (!panel)
+		return null;
+
+	let host = panel.host;
+	const wildcard = { '': 1, '0.0.0.0': 1, '127.0.0.1': 1, localhost: 1, '::': 1, '[::]': 1 };
+
+	if (wildcard[host])
+		host = '127.0.0.1';
+
+	let hdr = '';
+
+	if (panel.secret != '')
+		hdr = sprintf('--header %s', shq('Authorization: Bearer ' + panel.secret));
+
+	const url = sprintf('%s://%s:%s%s', panel.scheme, host, panel.port, path);
+	let body = run_capture(sprintf('uclient-fetch -T 3 -qO- %s %s 2>/dev/null', hdr, shq(url)));
+
+	if (trim(body) == '')
+		body = run_capture(sprintf('wget -T 3 -qO- %s 2>/dev/null', shq(url)));
+
+	if (trim(body) == '')
+		return null;
+
+	try {
+		return json(body);
+	}
+	catch (e) {
+		return null;
+	}
+}
+
+/* ------------------------------------------------------------- dashboard */
+
+function collect_listeners() {
+	let outp = run_capture("ss -lntup 2>/dev/null | awk 'NR>1 && /sing-box/ {print $1\"\\t\"$5\"\\t\"$NF}'");
+
+	if (outp == '')
+		outp = run_capture("netstat -lntup 2>/dev/null | awk 'NR>2 && /sing-box/ {print $1\"\\t\"$4\"\\t\"$7}'");
+
+	const listeners = [];
+	const lines = split(outp, '\n');
+
+	for (let line in lines) {
+		const m = match(line, /^([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+(.*)$/);
+
+		if (!m)
+			continue;
+
+		/* Local address is host:port (or [v6]:port); take after last colon. */
+		const cp = rindex(m[2], ':');
+		const port = (cp > 0) ? substr(m[2], cp + 1) : '-';
+
+		listeners[length(listeners)] = {
+			proto: m[1],
+			address: m[2],
+			port: match(port, /^[0-9]+$/) ? port : '-',
+			proc: m[3]
+		};
+	}
+
+	return listeners;
+}
+
+function read_log(lines) {
+	lines = lines || 200;
+	/* timeout guard: logread blocks forever when logd is not running,
+	 * and the dashboard polls this every few seconds. */
+	let logs = run_capture('timeout 5 logread -e sing-box 2>/dev/null | tail -n ' + lines);
+
+	if (trim(logs) != '')
+		return logs;
+
+	/* Fallback: many setups log to stderr/procd or to a file (log.output),
+	 * so `logread -e sing-box` returns nothing. Try the configured file. */
+	const data = read_json_file(CONFIG_PATH);
+	const outfile = (data && type(data.log) == 'object') ? data.log.output : null;
+
+	if (type(outfile) == 'string' && outfile != '' && outfile != 'stderr' &&
+	    outfile != 'stdout' && fs.access(outfile)) {
+		logs = run_capture(sprintf('tail -n %d %s 2>/dev/null', lines, shq(outfile)));
+
+		if (trim(logs) != '')
+			return logs;
+	}
+
+	logs = run_capture('logread 2>/dev/null | grep -i sing-box | tail -n ' + lines);
+
+	if (trim(logs) != '')
+		return logs;
+
+	return 'No sing-box logs found (service may log to stderr/procd; check \'logread\' or set log.output in config.json).';
+}
+
+/* Enumerate every sing-box process on the host (including ones inside LXC/
+ * VM containers sharing the host PID namespace). Reports cumulative CPU
+ * jiffies; the browser derives rates between polls -- no server sleep. */
+function collect_processes() {
+	const procs = [];
+
+	/* Authoritative PID of the procd-managed instance, if we can get it. */
+	let managed_pid = null;
+	const svc = read_json_cmd('ubus call service list \'{"name":"sing-box"}\' 2>/dev/null');
+
+	if (svc && type(svc['sing-box']) == 'object' &&
+	    type(svc['sing-box'].instances) == 'object') {
+		for (let k, inst in svc['sing-box'].instances) {
+			if (type(inst) == 'object' && inst.pid != null)
+				managed_pid = '' + inst.pid;
+		}
+	}
+
+	const pids = fs.lsdir('/proc') || [];
+
+	for (let pid in pids) {
+		if (match(pid, /^[0-9]+$/) == null)
+			continue;
+
+		const cmdline = fs.readfile('/proc/' + pid + '/cmdline');
+
+		if (cmdline == null)
+			continue;
+
+		/* /proc cmdline is NUL-separated; chr(0) breaks ucode's C-string
+		 * based split/replace, so rebuild the string byte by byte. */
+		let cmd = '';
+
+		for (let i = 0; i < length(cmdline); i++) {
+			const ch = substr(cmdline, i, 1);
+
+			cmd += (ch == chr(0)) ? ' ' : ch;
+		}
+
+		/* Only count processes whose executable is sing-box itself --
+		 * plain substring matching would also pick up transient helpers
+		 * like `logread -e sing-box` or this script's own children. */
+		const argv0 = split(trim(cmd), ' ')[0] || '';
+		const bn = match(argv0, /([^\/]+)$/);
+		const base = (bn != null) ? bn[1] : argv0;
+
+		if (index(base, 'sing-box') != 0)
+			continue;
+
+		const statdata = fs.readfile('/proc/' + pid + '/stat') || '';
+
+		/* Fields after the "(comm)" token: state ppid ... utime stime ...
+		 * `after` starts at overall field 3, so utime (field 14) sits at
+		 * zero-based index 11 and stime (field 15) at index 12. */
+		const am = match(statdata, /\)[[:space:]]+(.*)$/);
+		const f = (am != null) ? split(am[1], ' ') : [];
+		const utime = int(f[11]) || 0;
+		const stime = int(f[12]) || 0;
+
+		const status = fs.readfile('/proc/' + pid + '/status') || '';
+		const rm = match(status, /VmRSS:[[:space:]]*([0-9]+)/);
+		const um = match(status, /Uid:[[:space:]]*([0-9]+)/);
+		const rss_kb = (rm != null) ? int(rm[1]) : 0;
+		const uid = (um != null) ? um[1] : '?';
+
+		let role = 'other';
+
+		if (pid == managed_pid)
+			role = 'managed';
+		else if (index(cmd, CONFIG_PATH) >= 0)
+			role = 'managed';
+		else if (index(cmd, '/var/lib/sing-box') >= 0)
+			role = 'container/other';
+
+		procs[length(procs)] = {
+			pid: pid,
+			uid: uid,
+			role: role,
+			cmd: trim(cmd),
+			rss_kb: rss_kb,
+			jiffies: utime + stime
+		};
+	}
+
+	sort(procs, (a, b) => {
+		if (a.role == b.role)
+			return int(a.pid) - int(b.pid);
+
+		return (a.role == 'managed') ? -1 : ((b.role == 'managed') ? 1 : 0);
+	});
+
+	return procs;
+}
+
+/* -------------------------------------------------------------- commands */
+
+/* PID of the running sing-box instance. procd's service list is
+ * authoritative; the /proc fallback matches the kernel comm exactly and
+ * skips zombies. busybox `pidof sing-box` is unusable here: as a busybox
+ * applet it matches its own argv and always reports itself. */
+function find_singbox_pid() {
+	const svc = read_json_cmd('ubus call service list \'{"name":"sing-box"}\' 2>/dev/null');
+
+	if (svc && type(svc['sing-box']) == 'object' &&
+	    type(svc['sing-box'].instances) == 'object') {
+		for (let k, inst in svc['sing-box'].instances) {
+			if (type(inst) == 'object' && inst.pid != null)
+				return '' + inst.pid;
+		}
+	}
+
+	for (let pid in (fs.lsdir('/proc') || [])) {
+		if (match(pid, /^[0-9]+$/) == null)
+			continue;
+
+		if (trim(fs.readfile('/proc/' + pid + '/comm') || '') != 'sing-box')
+			continue;
+
+		const st = fs.readfile('/proc/' + pid + '/stat') || '';
+		const sm = match(st, /\)[[:space:]]+([A-Za-z])/);
+
+		if (sm != null && sm[1] == 'Z')
+			continue;
+
+		return pid;
+	}
+
+	return '';
+}
+
+function cmd_status() {
+	const running = (run_rc('/etc/init.d/sing-box status >/dev/null 2>&1') == 0);
+	const enabled = (run_rc('/etc/init.d/sing-box enabled >/dev/null 2>&1') == 0);
+	const pid = find_singbox_pid();
+	const panel = read_panel_info();
+
+	ok({
+		running: running,
+		enabled: enabled,
+		pid: (pid != '') ? pid : '-',
+		listeners: collect_listeners(),
+		logs: read_log(200),
+		version_output: get_version_output(),
+		panel_scheme: panel ? panel.scheme : '',
+		panel_host: panel ? panel.host : '',
+		panel_port: panel ? panel.port : '',
+		panel_ui: panel ? panel.ui_path : ''
+	});
+}
+
+function cmd_health() {
+	const conntrack = trim(fs.readfile('/proc/sys/net/netfilter/nf_conntrack_count') || '');
+	const clash_conn = clash_get('/connections');
+	let clash = null;
+
+	if (type(clash_conn) == 'object') {
+		clash = {
+			connections: (type(clash_conn.connections) == 'array') ? length(clash_conn.connections) : 0,
+			download_total: clash_conn.downloadTotal || 0,
+			upload_total: clash_conn.uploadTotal || 0,
+			memory: clash_conn.memory || 0
+		};
+	}
+
+	ok({
+		hz: 100,               /* OpenWrt kernels are built with CONFIG_HZ=100 */
+		now: time(),
+		procs: collect_processes(),
+		conntrack: (conntrack != '') ? int(conntrack) : null,
+		clash: clash
+	});
+}
+
+function cmd_service(action) {
+	if (action != 'start' && action != 'stop' && action != 'restart')
+		fail('Invalid service action.');
+
+	const rc = run_rc(sprintf('/etc/init.d/sing-box %s >/dev/null 2>&1', shq(action)));
+
+	if (rc == 0)
+		ok({ message: sprintf('sing-box %s completed.', action) });
+	else
+		fail(sprintf('Failed to %s sing-box.', action), { code: rc });
+}
+
+function cmd_update_info() {
+	let latest = '';
+	let body = run_capture('uclient-fetch -T 8 -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null');
+
+	if (body == '')
+		body = run_capture('wget -T 8 -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null');
+
+	if (body != '') {
+		try {
+			const data = json(body);
+
+			latest = trim(replace('' + (data.tag_name || ''), /^v/, ''));
+		}
+		catch (e) {
+			latest = '';
+		}
+	}
+
+	const arch = detect_platform_arch();
+
+	ok({
+		version_output: get_version_output(),
+		latest: latest,
+		raw_arch: arch[0],
+		auto_arch: arch[1],
+		arch_source: arch[2]
+	});
+}
+
+function update_proc_alive() {
+	const pid = trim(fs.readfile(UPDATE_PID) || '');
+
+	/* Verify the recorded PID really belongs to our updater -- a bare
+	 * kill -0 also succeeds when the container/device recycled the PID. */
+	if (pid == '' || match(pid, /^[0-9]+$/) == null)
+		return false;
+
+	if (run_rc(sprintf('kill -0 %d 2>/dev/null', int(pid))) != 0)
+		return false;
+
+	const cl = fs.readfile('/proc/' + pid + '/cmdline');
+
+	return (cl != null && index(cl, 'singbox-admin-update') >= 0);
+}
+
+function cmd_update_start(opts) {
+	/* Refuse to stack updates: a live recorded PID means one is in flight. */
+	if (update_proc_alive())
+		fail('An update is already running.');
+
+	fs.unlink(UPDATE_PID);
+
+	let inner;
+
+	if ('--url' in opts) {
+		const url = sanitize_url(opts['--url']);
+
+		if (url == null)
+			fail('Invalid URL.');
+
+		inner = sprintf('%s --url %s', shq(UPDATE_SCRIPT), shq(url));
+	}
+	else {
+		const version = sanitize_version(opts['--version']);
+		const arch = sanitize_arch(opts['--arch']);
+
+		if (version == null || arch == null)
+			fail('Use URL or provide valid version + architecture.');
+
+		inner = sprintf('%s --version %s --arch %s', shq(UPDATE_SCRIPT), shq(version), shq(arch));
+	}
+
+	/* Detach: redirect all fds away from the rpcd pipe, background the job
+	 * and record its PID in the same shell so $! is accurate. The helper
+	 * shell then exits while the update keeps running orphaned. */
+	run_rc(sprintf('%s >%s 2>&1 </dev/null &\necho $! >%s\nexit 0\n',
+		inner, shq(UPDATE_LOG), shq(UPDATE_PID)));
+
+	ok({ message: 'Update started.' });
+}
+
+function cmd_update_status() {
+	const running = update_proc_alive();
+
+	if (!running)
+		fs.unlink(UPDATE_PID);
+
+	const raw = fs.readfile(UPDATE_LOG) || '';
+	const log = (length(raw) > 8000) ? substr(raw, length(raw) - 8000) : raw;
+
+	ok({ running: running, log: trim(log) });
+}
+
+/* ------------------------------------------------------- firewall script */
+
+function fw_ensure() {
+	/* Seed the live script from the shipped template on first use only;
+	 * never overwrite an existing (possibly customized) file. */
+	if (fs.access(FW_SCRIPT))
+		return;
+
+	system(sprintf('mkdir -p %s', shq(fs.dirname(FW_SCRIPT))));
+
+	let seed = fs.access(FW_TEMPLATE) ? fs.readfile(FW_TEMPLATE) : null;
+
+	if (seed == null || seed == '') {
+		seed = '#!/bin/sh\n\n' +
+		       '# Build your nft ruleset / policy routes here.\n' +
+		       '# Make deletes idempotent, e.g.: nft delete table inet singbox 2>/dev/null\n';
+	}
+
+	fs.writefile(FW_SCRIPT, seed);
+	system(sprintf('chmod 0755 %s', shq(FW_SCRIPT)));
+}
+
+function cmd_fw(sub, opts) {
+	sub = sub || '';
+
+	if (sub == 'ensure') {
+		fw_ensure();
+		ok({});
+	}
+
+	if (sub == 'state') {
+		if (!fs.access(FW_EXEC))
+			ok({ output: 'Firewall executor not installed: ' + FW_EXEC, boot_enabled: false });
+
+		const outp = trim(run_capture(shq(FW_EXEC) + ' status 2>&1'));
+		const boot_enabled = (run_rc('/etc/init.d/singbox-firewall enabled >/dev/null 2>&1') == 0);
+
+		ok({
+			output: (outp != '') ? outp : '(empty)',
+			boot_enabled: boot_enabled
+		});
+	}
+
+	if (sub == 'validate') {
+		if (!fs.access(FW_EXEC))
+			fail('Executor not installed.');
+
+		const logf = '/tmp/sing-box-fw.validate.log';
+		const rc = run_logged(shq(FW_EXEC) + ' validate', logf);
+
+		out({ ok: (rc == 0), message: trim(fs.readfile(logf) || '') });
+		exit((rc == 0) ? 0 : 1);
+	}
+
+	if (sub == 'apply') {
+		if (!fs.access(FW_EXEC))
+			fail('Executor not installed.');
+
+		const logf = '/tmp/sing-box-fw.apply.log';
+		const rc = run_logged(shq(FW_EXEC) + ' apply', logf);
+		const msg = trim(fs.readfile(logf) || '');
+
+		out({
+			ok: (rc == 0),
+			message: (msg != '') ? msg : ((rc == 0) ? 'Applied.' : 'Apply failed.')
+		});
+		exit((rc == 0) ? 0 : 1);
+	}
+
+	if (sub == 'save') {
+		const from = opts['--from'];
+
+		if (from == null)
+			fail('Missing --from for fw save.');
+
+		const value = fs.readfile(from);
+
+		if (value == null)
+			fail('Cannot read uploaded script.');
+
+		if (length(value) > 1024 * 1024)   /* editor is a shell script, not a blob */
+			fail('Script too large (>1 MiB).');
+
+		fw_ensure();
+		fs.writefile(FW_SCRIPT, join('\n', split(value, '\r\n')));
+		system(sprintf('chmod 0755 %s', shq(FW_SCRIPT)));
+		fs.unlink(from);
+
+		ok({ message: 'Saved. Use Validate / Apply to check and load it.' });
+	}
+
+	if (sub == 'boot-on' || sub == 'boot-off') {
+		const enable = (sub == 'boot-on');
+
+		run_rc(sprintf('/etc/init.d/singbox-firewall %s >/dev/null 2>&1',
+			enable ? 'enable' : 'disable'));
+		uci_set('singbox', 'main', 'fw_boot', enable ? '1' : '0');
+
+		ok({ message: enable ? 'Firewall will be applied on boot.' : 'Boot application disabled.' });
+	}
+
+	fail(sprintf('Unknown fw subcommand "%s".', sub));
+}
+
+/* ---------------------------------------------------------- config files */
+
+function prune_backups(keep) {
+	keep = int(keep) || 10;
+	const items = [];
+	const names = fs.lsdir(BACKUP_DIR) || [];
+
+	for (let name in names) {
+		if (!match(name, /^config\..*\.json$/))
+			continue;
+
+		const st = fs.stat(BACKUP_DIR + '/' + name);
+
+		items[length(items)] = { name: name, mtime: (st != null) ? st.mtime : 0 };
+	}
+
+	sort(items, (a, b) => b.mtime - a.mtime);
+
+	for (let i = keep; i < length(items); i++)
+		fs.unlink(BACKUP_DIR + '/' + items[i].name);
+}
+
+function cmd_config(sub, opts) {
+	sub = sub || '';
+
+	if (sub == 'read') {
+		const st = fs.stat(CONFIG_PATH);
+
+		ok({
+			content: fs.readfile(CONFIG_PATH) || '{}\n',
+			mtime: (st != null) ? st.mtime : null
+		});
+	}
+
+	if (sub == 'save') {
+		const from = opts['--from'];
+
+		if (from == null)
+			fail('Missing --from for config save.');
+
+		let value = fs.readfile(from);
+
+		if (value == null)
+			fail('Cannot read uploaded configuration.');
+
+		if (length(value) > 4 * 1024 * 1024)
+			fail('Configuration too large (>4 MiB).');
+
+		/* Normalize CRLF browsers may submit; keeps saved files LF-only. */
+		value = join('\n', split(value, '\r\n'));
+
+		system(sprintf('mkdir -p %s', shq(fs.dirname(CONFIG_PATH))));
+		fs.writefile(CHECK_PATH, value);
+
+		const rc = run_logged(sprintf('/usr/bin/sing-box check -c %s', shq(CHECK_PATH)), CHECK_LOG);
+		fs.unlink(CHECK_PATH);
+
+		if (rc != 0) {
+			const log = trim(fs.readfile(CHECK_LOG) || '');
+
+			out({ ok: false, message: 'Configuration Check Failed!\n' + log });
+			exit(1);
+		}
+
+		/* Snapshot the CURRENT config before overwriting, so a valid-but-
+		 * wrong edit can still be undone. */
+		const cur = fs.readfile(CONFIG_PATH);
+
+		if (cur != null && cur != value) {
+			system(sprintf('mkdir -p %s', shq(BACKUP_DIR)));
+			fs.writefile(sprintf('%s/config.%s.json', BACKUP_DIR, stamp()), cur);
+			prune_backups(uci_get('singbox', 'main', 'backup_keep'));
+		}
+
+		fs.writefile(CONFIG_PATH, value);
+		fs.writefile(CHECK_LOG, '');
+		fs.unlink(from);
+
+		ok({ message: 'Configuration saved (previous version backed up).' });
+	}
+
+	if (sub == 'backups') {
+		const items = [];
+		const names = fs.lsdir(BACKUP_DIR) || [];
+
+		for (let name in names) {
+			if (!match(name, /^config\..*\.json$/))
+				continue;
+
+			const st = fs.stat(BACKUP_DIR + '/' + name);
+
+			items[length(items)] = {
+				name: name,
+				mtime: (st != null) ? st.mtime : 0,
+				size: (st != null) ? st.size : 0
+			};
+		}
+
+		sort(items, (a, b) => b.mtime - a.mtime);
+
+		ok({ backups: items });
+	}
+
+	if (sub == 'restore') {
+		const name = trim(opts['--name'] || '');
+
+		/* Strict allow-list: basename only, must match our backup pattern. */
+		if (!match(name, /^config\.[0-9A-Za-z_.%-]+\.json$/))
+			fail('Invalid backup name.');
+
+		const src = BACKUP_DIR + '/' + name;
+
+		if (!fs.access(src))
+			fail('Backup not found.');
+
+		const value = fs.readfile(src);
+
+		if (value == null)
+			fail('Cannot read backup.');
+
+		/* Validate against the current binary before touching the live
+		 * configuration. */
+		fs.writefile(CHECK_PATH, value);
+
+		const rc = run_logged(sprintf('/usr/bin/sing-box check -c %s', shq(CHECK_PATH)), CHECK_LOG);
+		fs.unlink(CHECK_PATH);
+
+		if (rc != 0) {
+			const log = trim(fs.readfile(CHECK_LOG) || '');
+
+			out({ ok: false, message: 'Backup failed validation:\n' + log });
+			exit(1);
+		}
+
+		/* Snapshot the current config first, then restore. */
+		const cur = fs.readfile(CONFIG_PATH);
+
+		if (cur != null) {
+			system(sprintf('mkdir -p %s', shq(BACKUP_DIR)));
+			fs.writefile(sprintf('%s/config.%s.pre-restore.json', BACKUP_DIR, stamp()), cur);
+		}
+
+		fs.writefile(CONFIG_PATH, value);
+
+		ok({ message: 'Restored ' + name + '. Restart sing-box to apply.' });
+	}
+
+	fail(sprintf('Unknown config subcommand "%s".', sub));
+}
+
+/* ------------------------------------------------------------------ main */
+
+function main(args) {
+	/* Locate the first real subcommand token; anything before it is the
+	 * interpreter/script path as passed to the shebang invocation. */
+	let base = -1;
+
+	for (let i = 0; i < length(args); i++) {
+		if (index(SUBCOMMANDS, args[i]) >= 0) {
+			base = i;
+			break;
+		}
+	}
+
+	if (base < 0)
+		fail('Usage: singbox-admin {' + join('|', SUBCOMMANDS) + '} ...');
+
+	const cmd = args[base];
+	const rest = [];
+
+	for (let i = base + 1; i < length(args); i++)
+		rest[length(rest)] = args[i];
+
+	switch (cmd) {
+	case 'status':
+		cmd_status();
+		break;
+
+	case 'health':
+		cmd_health();
+		break;
+
+	case 'service':
+		cmd_service(rest[0]);
+		break;
+
+	case 'update-info':
+		cmd_update_info();
+		break;
+
+	case 'update-start':
+		cmd_update_start(parse_opts(rest));
+		break;
+
+	case 'update-status':
+		cmd_update_status();
+		break;
+
+	case 'fw':
+		cmd_fw(rest[0], parse_opts(rest));
+		break;
+
+	case 'config':
+		cmd_config(rest[0], parse_opts(rest));
+		break;
+	}
+
+	fail(sprintf('Unhandled command "%s".', cmd));
+}
+
+try {
+	main(ARGV);
+}
+catch (e) {
+	out({ ok: false, message: sprintf('Internal error: %s', e) || 'Internal error.' });
+	exit(1);
+}

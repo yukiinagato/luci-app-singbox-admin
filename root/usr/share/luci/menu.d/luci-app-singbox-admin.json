@@ -1,0 +1,49 @@
+{
+	"admin/services/sing-box": {
+		"title": "Sing-box设置",
+		"order": 60,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-singbox-admin" ],
+			"uci": { "singbox": true }
+		}
+	},
+
+	"admin/services/sing-box/main": {
+		"title": "Dashboard",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "singbox/main"
+		},
+		"depends": {
+			"acl": [ "luci-app-singbox-admin" ]
+		}
+	},
+
+	"admin/services/sing-box/config": {
+		"title": "Config Editor",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "singbox/config"
+		},
+		"depends": {
+			"acl": [ "luci-app-singbox-admin" ]
+		}
+	},
+
+	"admin/services/sing-box/script": {
+		"title": "Firewall Script",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "singbox/script"
+		},
+		"depends": {
+			"acl": [ "luci-app-singbox-admin" ]
+		}
+	}
+}

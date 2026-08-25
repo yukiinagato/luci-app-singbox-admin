@@ -30,11 +30,14 @@ jobs:
           else
             FINAL_VER="${BASE_VER}-git-${TIMESTAMP}-${SHORT_SHA}"
           fi
-          
+
           echo "FINAL_VER=$FINAL_VER" >> $GITHUB_ENV
           sed -i "s/Version: .*/Version: $FINAL_VER/" control
+          # apk package revision format: 1.2.3-r4
+          APK_VER=$(echo "$FINAL_VER" | sed -E 's/-([0-9]+)$/-r\1/')
+          echo "APK_VER=$APK_VER" >> $GITHUB_ENV
 
-      - name: Build IPK
+      - name: Build IPK (legacy opkg)
         run: |
           mkdir -p ipk_root/CONTROL
           [ -f "control" ] && cp control ipk_root/CONTROL/
@@ -43,21 +46,75 @@ jobs:
             [ -f "$s" ] && cp "$s" ipk_root/CONTROL/
           done
           [ -d "root" ] && cp -r root/* ipk_root/
+          # LuCI convention: htdocs/ maps to /www on the device.
+          if [ -d "htdocs" ]; then
+            mkdir -p ipk_root/www
+            cp -r htdocs/* ipk_root/www/
+          fi
+          # Strip any stray editor/OS junk so it never ships in a package.
+          find ipk_root \( -name '.DS_Store' -o -name '._*' \) -delete
           chmod -R 755 ipk_root/
-          wget https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build
+          wget -q https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build
           chmod +x ipkg-build
           ./ipkg-build ipk_root .
+
+      - name: Build Host apk-tools (mainline package format)
+        run: |
+          sudo apt-get update -qq
+          # lua5.1 is needed by apk-tools' -Dhelp=enabled (help text generator).
+          sudo apt-get install -y -qq meson ninja-build libssl-dev zlib1g-dev lua5.1
+          git clone --depth 1 --branch v3.0.5 https://gitlab.alpinelinux.org/alpine/apk-tools.git /tmp/apk-tools
+          cd /tmp/apk-tools
+          # Same options as OpenWrt mainline's package/system/apk host build.
+          meson setup build --prefix=/usr --buildtype=release \
+            -Db_lto=true -Ddocs=disabled -Dhelp=enabled -Dlua_version=5.1 \
+            -Ddefault_library=static -Durl_backend=wget -Dzstd=disabled \
+            -Dpython=disabled -Dtests=disabled -Dcrypto_backend=openssl
+          ninja -C build
+
+      - name: Build APK (apk-tools / OpenWrt mainline)
+        run: |
+          mkdir -p apk_root apk_scripts artifacts
+          [ -d "root" ] && cp -r root/* apk_root/
+          # LuCI convention: htdocs/ maps to /www on the device.
+          if [ -d "htdocs" ]; then
+            mkdir -p apk_root/www
+            cp -r htdocs/* apk_root/www/
+          fi
+          find apk_root \( -name '.DS_Store' -o -name '._*' \) -delete
+          # opkg-style postinst -> apk post-install script slot.
+          if [ -f "postinst" ]; then
+            cp postinst apk_scripts/post-install
+            chmod 755 apk_scripts/post-install
+          fi
+          chmod -R 755 apk_root/
+          APK_DESC=$(awk 'f{print} /^Description:/{f=1}' control | tr '\n' ' ')
+          /tmp/apk-tools/build/src/apk mkpkg \
+            --info "name:luci-app-singbox-admin" \
+            --info "version:${{ env.APK_VER }}" \
+            --info "description:$APK_DESC" \
+            --info "arch:noarch" \
+            --info "license:MIT" \
+            --info "origin:luci-app-singbox-admin" \
+            --info "url:https://github.com/yukiinagato/luci-app-singbox-admin" \
+            --info "maintainer:Yukiinagato" \
+            --info "depends:luci-base sing-box nftables" \
+            --script "post-install:$PWD/apk_scripts/post-install" \
+            --files "$PWD/apk_root" \
+            --output "$PWD/artifacts/luci-app-singbox-admin_${{ env.APK_VER }}_all.apk"
 
       - name: Collect Artifacts
         run: |
           mkdir -p artifacts
-          mv *.ipk artifacts/luci-app-singbox-admin_${{ env.FINAL_VER }}_all.ipk
+          mv *.ipk artifacts/luci-app-singbox-admin_${{ env.FINAL_VER }}_all.ipk 2>/dev/null || true
+          ls -la artifacts/
 
       - name: Upload to Actions
         uses: actions/upload-artifact@v4
         with:
           name: ipk-${{ github.ref_name }}-${{ env.FINAL_VER }}
-          path: artifacts/*.ipk
+          path: artifacts/*
+          if-no-files-found: error
 
   release:
     needs: build
@@ -77,6 +134,6 @@ jobs:
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-          files: artifacts/*.ipk
+          files: artifacts/*
           make_latest: true
           generate_release_notes: true

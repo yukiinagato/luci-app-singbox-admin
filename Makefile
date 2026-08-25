@@ -10,9 +10,10 @@ PKG_LICENSE:=MIT
 
 # LuCI 專用定義
 LUCI_TITLE:=Sing-box Admin Web Interface
+# 純 JS view（ucode 後端），不依賴 luci-compat / luci-lua-runtime。
 # nftables is required by the firewall executor. tproxy transparent proxying
 # additionally needs kmod-nft-tproxy at runtime (not forced here to keep the
-# manual .ipk install flexible -- see README).
+# manual install flexible -- see README).
 LUCI_DEPENDS:=+sing-box +luci-base +nftables
 LUCI_PKGARCH:=all
 
@@ -24,7 +25,8 @@ define Package/$(PKG_NAME)/description
   a config.json editor with validation and timestamped backups/restore, a
   rollback-protected nftables/tproxy firewall-script manager (validate,
   apply now, apply on boot), and one-click sing-box binary updates from
-  GitHub releases with architecture auto-detection.
+  GitHub releases with architecture auto-detection (opkg or apk).
 endef
 
 $(eval $(call BuildPackage,$(PKG_NAME)))
+
