@@ -51,6 +51,14 @@ jobs:
             mkdir -p ipk_root/www
             cp -r htdocs/* ipk_root/www/
           fi
+          # Mark UCI config as a conffile so opkg upgrades don't clobber the
+          # user's settings (fw_boot/backup_keep/panel_path/wrap). opkg only
+          # preserves files listed here; without it every upgrade overwrites
+          # /etc/config/singbox. (apk protects it automatically by content
+          # hash, so no equivalent is needed on the apk side.)
+          if [ -f "ipk_root/etc/config/singbox" ]; then
+            echo "/etc/config/singbox" >> ipk_root/CONTROL/conffiles
+          fi
           # Strip any stray editor/OS junk so it never ships in a package.
           find ipk_root \( -name '.DS_Store' -o -name '._*' \) -delete
           chmod -R 755 ipk_root/

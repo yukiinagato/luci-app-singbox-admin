@@ -30,6 +30,16 @@ URL=""
 log() { echo "$@"; }
 fail() { echo "$@" >&2; exit 1; }
 
+# Serialize updaters. The caller (singbox-admin) also does a best-effort PID
+# check, but that is check-then-act; this lock is the atomic guarantee that
+# only one process ever installs over $TARGET at a time. A second concurrent
+# invocation exits immediately instead of racing the package install.
+LOCK="/tmp/sing-box-update.lock"
+exec 9>"$LOCK" || fail "Cannot open update lock $LOCK."
+if ! flock -n 9; then
+	fail "Another sing-box update is already in progress."
+fi
+
 # ---------------------------------------------------------------------------
 # Package manager detection: opkg wins when both exist (conservative -- a
 # leftover apk on an opkg system may lack configured repositories).

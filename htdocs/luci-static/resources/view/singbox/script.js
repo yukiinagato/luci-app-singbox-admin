@@ -54,11 +54,11 @@ return view.extend({
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, _('Boot & Editor')),
 				E('label', { 'style': 'display:block;margin-bottom:4px' }, [
-					E('input', { 'type': 'checkbox', 'id': 'sb-fw-boot', 'checked': !!state.boot_enabled }),
+					E('input', { 'type': 'checkbox', 'id': 'sb-fw-boot', 'checked': state.boot_enabled ? '' : null }),
 					' ' + _('Apply firewall on boot (enables the singbox-firewall init service)')
 				]),
 				E('label', { 'style': 'display:block;margin-bottom:4px' }, [
-					E('input', { 'type': 'checkbox', 'id': 'sb-fw-wrap', 'checked': wrapOn }),
+					E('input', { 'type': 'checkbox', 'id': 'sb-fw-wrap', 'checked': wrapOn ? '' : null }),
 					' ' + _('Auto wrap')
 				]),
 				E('textarea', {
@@ -104,9 +104,14 @@ return view.extend({
 			});
 		};
 
-		/* Persist editor content to a temp file the helper can read. */
+		/* Persist editor content to a temp file the helper can read. The
+		 * write goes over ubus, which is size-limited; surface an actionable
+		 * error rather than an opaque RPC failure if the script is too big. */
 		const saveEditor = function() {
-			return fs.write('/tmp/sing-box-fw.upload.sh', text.value).then(function() {
+			return fs.write('/tmp/sing-box-fw.upload.sh', text.value).catch(function(e) {
+				return Promise.reject(new Error(
+					_('Could not upload the script (it may be too large to save through the web UI): ') + (e.message || e)));
+			}).then(function() {
 				return call('fw', 'save', '--from', '/tmp/sing-box-fw.upload.sh');
 			});
 		};

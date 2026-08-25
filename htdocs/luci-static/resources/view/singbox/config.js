@@ -78,7 +78,7 @@ return view.extend({
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, _('Editor')),
 				E('label', { 'style': 'display:block;margin-bottom:4px' }, [
-					E('input', { 'type': 'checkbox', 'id': 'sb-cfg-wrap', 'checked': wrapOn }),
+					E('input', { 'type': 'checkbox', 'id': 'sb-cfg-wrap', 'checked': wrapOn ? '' : null }),
 					' ' + _('Auto wrap')
 				]),
 				E('textarea', {
@@ -87,7 +87,7 @@ return view.extend({
 					'wrap': wrapOn ? 'soft' : 'off',
 					'class': 'cbi-input-textarea',
 					'style': 'width:100%;font-family:monospace;box-sizing:border-box'
-				}, content),
+				}),
 				E('div', { 'style': 'margin-top:8px;display:flex;gap:8px' }, [
 					E('button', { 'class': 'btn cbi-button cbi-button-apply', 'id': 'sb-cfg-save' }, _('Save & Validate')),
 					E('button', { 'class': 'btn cbi-button cbi-button-reload', 'id': 'sb-cfg-restart' }, _('Restart sing-box'))
@@ -111,6 +111,12 @@ return view.extend({
 		]);
 
 		const text = container.querySelector('#sb-cfg-text');
+
+		/* Assign via .value, never as an E() child: a lone string child is
+		 * inserted through innerHTML, which HTML-decodes entities and lets a
+		 * </textarea> substring break out -- silently corrupting the config
+		 * on the next save. */
+		text.value = content;
 		const msg = container.querySelector('#sb-cfg-msg');
 		const errPre = container.querySelector('#sb-cfg-err');
 
@@ -143,7 +149,15 @@ return view.extend({
 			msg.style.color = '#666';
 			msg.textContent = _('Validating…');
 
-			fs.write('/tmp/sing-box-cfg.upload.json', text.value).then(function() {
+			/* The editor buffer is delivered to the helper as a single ubus
+			 * file.write, which is size-limited by the ubus transport (well
+			 * below the helper's own cap). Turn the resulting opaque RPC
+			 * error into an actionable message instead of "No related RPC
+			 * reply". */
+			fs.write('/tmp/sing-box-cfg.upload.json', text.value).catch(function(e) {
+				return Promise.reject(new Error(
+					_('Could not upload the configuration (it may be too large to save through the web UI): ') + (e.message || e)));
+			}).then(function() {
 				return call('config', 'save', '--from', '/tmp/sing-box-cfg.upload.json');
 			}).then(function(res) {
 				if (res.ok) {

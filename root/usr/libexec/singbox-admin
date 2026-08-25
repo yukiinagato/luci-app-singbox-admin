@@ -84,6 +84,19 @@ function run_logged(cmd, logfile) {
 	return system(sprintf('%s >%s 2>&1', cmd, shq(logfile)));
 }
 
+/* The browser always stages uploads in a fixed /tmp/sing-box* file (see the
+ * JS views and the rpcd ACL's /tmp/sing-box* glob). Constrain any caller-
+ * supplied --from to that exact namespace -- no sub-paths, no traversal -- so
+ * this root helper can never be tricked into reading or unlinking an
+ * arbitrary file (e.g. --from /etc/shadow). Returns the path or null. */
+function upload_path(from) {
+	if (type(from) != 'string' ||
+	    match(from, /^\/tmp\/sing-box[A-Za-z0-9._-]*$/) == null)
+		return null;
+
+	return from;
+}
+
 function read_json_file(path) {
 	const raw = fs.readfile(path);
 
@@ -403,7 +416,7 @@ function clash_get(path) {
 	let body = run_capture(sprintf('uclient-fetch -T 3 -qO- %s %s 2>/dev/null', hdr, shq(url)));
 
 	if (trim(body) == '')
-		body = run_capture(sprintf('wget -T 3 -qO- %s 2>/dev/null', shq(url)));
+		body = run_capture(sprintf('wget -T 3 -qO- %s %s 2>/dev/null', hdr, shq(url)));
 
 	if (trim(body) == '')
 		return null;
@@ -470,7 +483,7 @@ function read_log(lines) {
 			return logs;
 	}
 
-	logs = run_capture('logread 2>/dev/null | grep -i sing-box | tail -n ' + lines);
+	logs = run_capture('timeout 5 logread 2>/dev/null | grep -i sing-box | tail -n ' + lines);
 
 	if (trim(logs) != '')
 		return logs;
@@ -620,7 +633,6 @@ function cmd_status() {
 		pid: (pid != '') ? pid : '-',
 		listeners: collect_listeners(),
 		logs: read_log(200),
-		version_output: get_version_output(),
 		panel_scheme: panel ? panel.scheme : '',
 		panel_host: panel ? panel.host : '',
 		panel_port: panel ? panel.port : '',
@@ -826,10 +838,10 @@ function cmd_fw(sub, opts) {
 	}
 
 	if (sub == 'save') {
-		const from = opts['--from'];
+		const from = upload_path(opts['--from']);
 
 		if (from == null)
-			fail('Missing --from for fw save.');
+			fail('Missing or invalid --from for fw save.');
 
 		const value = fs.readfile(from);
 
@@ -895,10 +907,10 @@ function cmd_config(sub, opts) {
 	}
 
 	if (sub == 'save') {
-		const from = opts['--from'];
+		const from = upload_path(opts['--from']);
 
 		if (from == null)
-			fail('Missing --from for config save.');
+			fail('Missing or invalid --from for config save.');
 
 		let value = fs.readfile(from);
 

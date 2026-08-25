@@ -314,7 +314,13 @@ return view.extend({
 					E('input', { 'id': 'sb-version-input', 'type': 'text', 'placeholder': '1.13.19', 'style': 'min-width:120px' }),
 					E('label', { 'for': 'sb-arch-select' }, _('Architecture')),
 					E('select', { 'id': 'sb-arch-select', 'style': 'min-width:170px' }, [
-						autoArch ? E('option', { 'value': autoArch }, '%s (%s)'.format(autoArch, _('auto-detected'))) : E('option', { 'value': '' }, _('Auto Detect')),
+						/* There is no server-side auto-detect fallback: when arch
+						 * detection failed the user must pick Custom/Manual, so
+						 * offer a disabled placeholder rather than a dead ''
+						 * option that would just error on Update. */
+						autoArch
+							? E('option', { 'value': autoArch }, '%s (%s)'.format(autoArch, _('auto-detected')))
+							: E('option', { 'value': '', 'disabled': '', 'selected': '' }, _('Select architecture…')),
 						E('option', { 'value': 'custom' }, _('Custom/Manual'))
 					]),
 					E('input', { 'id': 'sb-custom-arch', 'type': 'text', 'placeholder': 'e.g. aarch64_cortex-a53', 'style': 'display:none;min-width:200px' })
