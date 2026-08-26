@@ -83,18 +83,16 @@ else
 	# Pre-flight: older and alpha releases often publish no OpenWrt package in
 	# the format this device needs (availability is format-specific -- e.g.
 	# 1.13.0 ships an .ipk but no .apk), so a version picked from the tag list
-	# can 404 mid-download. Confirm the exact asset exists first and fail with
-	# a clear message. A network failure here must NOT block (the download is
-	# the real gate).
+	# can 404 mid-download. HEAD the exact asset and fail early with a clear
+	# message. Uses the (unmetered) download host, NOT api.github.com, which is
+	# rate-limited to 60 req/h and would fail open once exhausted. rc 8 = HTTP
+	# error (404); a network failure (other rc) must NOT block -- the real
+	# download below is the ultimate gate.
 	case "$PKG_MGR" in opkg) EXT="ipk" ;; apk) EXT="apk" ;; *) EXT="" ;; esac
-	API="https://api.github.com/repos/SagerNet/sing-box/releases/tags/v${VERSION}"
-	if command -v uclient-fetch >/dev/null 2>&1; then
-		TAGJSON="$(uclient-fetch -T 15 -qO- "$API" 2>/dev/null || true)"
-	else
-		TAGJSON="$(wget -T 15 -qO- "$API" 2>/dev/null || true)"
-	fi
-	if [ -n "$EXT" ] && [ -n "$TAGJSON" ] && \
-	   ! printf '%s' "$TAGJSON" | grep -q "_openwrt_${ARCH}\.${EXT}"; then
+	if command -v uclient-fetch >/dev/null 2>&1; then SPIDER="uclient-fetch"; else SPIDER="wget"; fi
+	SP_RC=0
+	"$SPIDER" -T 15 --spider "$URL" >/dev/null 2>&1 || SP_RC="$?"
+	if [ "$SP_RC" = "8" ]; then
 		fail "sing-box ${VERSION} has no OpenWrt .${EXT} package for ${ARCH}. Pick a different version (older and alpha releases often ship no ${EXT} build for this arch)."
 	fi
 fi

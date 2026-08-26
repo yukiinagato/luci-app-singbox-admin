@@ -28,6 +28,8 @@ const CHECK_PATH = '/tmp/sing-box-config.check.json';
 const CHECK_LOG = '/tmp/sing-box-check.log';
 const UPDATE_LOG = '/tmp/sing-box-update.log';
 const UPDATE_PID = '/tmp/sing-box-update.pid';
+const UPDATE_INFO_CACHE = '/tmp/sing-box-update-info.cache.json';
+const UPDATE_INFO_TTL = 3600;   /* seconds; refresh the version/arch lists hourly */
 
 const SUBCOMMANDS = [
 	'status', 'health', 'service',
@@ -690,6 +692,27 @@ function http_fetch(url) {
 
 function cmd_update_info() {
 	const arch = detect_platform_arch();
+	const now = time();
+
+	/* The version/arch lists come from api.github.com, which is rate-limited to
+	 * 60 req/h per IP. Cache them so repeated dashboard loads don't re-hit the
+	 * API (and so a rate-limited/offline fetch can fall back to the last good
+	 * list instead of an empty dropdown). A fresh cache is served directly. */
+	const cached = read_json_file(UPDATE_INFO_CACHE);
+
+	if (cached != null && type(cached.ts) == 'int' && (now - cached.ts) < UPDATE_INFO_TTL &&
+	    type(cached.releases) == 'array' && length(cached.releases) > 0) {
+		ok({
+			version_output: get_version_output(),
+			latest: cached.latest || '',
+			releases: cached.releases,
+			arches: (type(cached.arches) == 'array') ? cached.arches : [],
+			raw_arch: arch[0],
+			auto_arch: arch[1],
+			arch_source: arch[2],
+			cached: true
+		});
+	}
 
 	/* Version list from the lightweight tags endpoint. The releases list with
 	 * its embedded assets is ~25 MB for this repo; tags is ~40 KB. Classify by
@@ -755,6 +778,20 @@ function cmd_update_info() {
 		catch (e) {}
 	}
 
+	/* On a failed/partial fetch (rate limit, offline), fall back to the last
+	 * cached lists rather than showing an empty dropdown. On success, refresh
+	 * the cache. */
+	if (length(releases) == 0 && cached != null && type(cached.releases) == 'array' && length(cached.releases) > 0) {
+		releases = cached.releases;
+		latest = (latest != '') ? latest : (cached.latest || '');
+		if (length(arches) == 0 && type(cached.arches) == 'array')
+			arches = cached.arches;
+	}
+	else if (length(releases) > 0) {
+		fs.writefile(UPDATE_INFO_CACHE,
+			sprintf('%J', { ts: now, releases: releases, arches: arches, latest: latest }));
+	}
+
 	ok({
 		version_output: get_version_output(),
 		latest: latest,
@@ -777,22 +814,39 @@ function pkg_format() {
 	return 'ipk';
 }
 
+/* Download URL of the OpenWrt package for a version+arch in this device's
+ * format. */
+function asset_url(version, arch) {
+	return sprintf('https://github.com/SagerNet/sing-box/releases/download/v%s/sing-box_%s_openwrt_%s.%s',
+		version, version, arch, pkg_format());
+}
+
 /* Whether the upstream publishes an OpenWrt package for this version+arch in
  * the format this device needs. Availability is format-specific: older
  * releases ship only .ipk, and .apk builds started later -- so 1.13.0 has an
  * .ipk but no .apk (an apk device picking 1.13.0 would 404). Not every tag has
- * OpenWrt builds at all (alpha releases often don't). Checks the single
- * release's assets (~250 KB) rather than the 25 MB full list. Returns
- * true/false, or null when the check could not run (network) so callers can
- * treat "unknown" as "allow". */
+ * OpenWrt builds at all (alpha releases often don't).
+ *
+ * Checks the real download URL with a HEAD-style spider (no body download).
+ * Deliberately NOT the GitHub API: that is rate-limited to 60 req/h per IP and
+ * once exhausted the check would fail open and re-admit the 404. The release
+ * download host is not rate-limited. Returns true (rc 0 = exists), false
+ * (rc 8 = HTTP error, i.e. 404), or null (other rc = network failure ->
+ * "unknown", callers treat as allow). */
 function asset_available(version, arch) {
-	const body = http_fetch(sprintf('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v%s', version));
+	const url = asset_url(version, arch);
 
-	if (trim(body) == '')
-		return null;
+	/* uclient-fetch is the usual OpenWrt fetcher (often symlinked as wget);
+	 * fall back to wget only if it is absent. --spider is HEAD-only. */
+	const cmd = (run_rc('command -v uclient-fetch >/dev/null 2>&1') == 0) ? 'uclient-fetch' : 'wget';
+	const rc = run_rc(sprintf('%s -T 10 --spider %s >/dev/null 2>&1', cmd, shq(url)));
 
-	/* Literal match against the raw JSON: sing-box_<ver>_openwrt_<arch>.<ext>. */
-	return (index(body, sprintf('_openwrt_%s.%s', arch, pkg_format())) >= 0);
+	if (rc == 0)
+		return true;
+	if (rc == 8)
+		return false;
+
+	return null;
 }
 
 function cmd_asset_check(opts) {
