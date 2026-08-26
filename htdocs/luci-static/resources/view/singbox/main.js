@@ -46,6 +46,62 @@ function buildVersionOptions(releases, latest) {
 	return opts;
 }
 
+/* Classify an OpenWrt arch token into a CPU family [code, label] so the
+ * arch picker can group entries. Derived from the token, never hard-coded. */
+function archFamily(a) {
+	if (/^(x86_64|i386)/.test(a)) return ['x86', _('x86')];
+	if (/^aarch64/.test(a))       return ['arm64', _('ARM 64-bit')];
+	if (/^arm/.test(a))           return ['arm32', _('ARM 32-bit')];
+	if (/^mips64/.test(a))        return ['mips64', _('MIPS64')];
+	if (/^mips/.test(a))          return ['mips', _('MIPS')];
+	if (/^loongarch/.test(a))     return ['loong', _('LoongArch')];
+	if (/^riscv/.test(a))         return ['riscv', _('RISC-V')];
+	return ['other', _('Other')];
+}
+
+/* Build the Architecture <select> children from the arch list the helper
+ * parsed out of the upstream release assets, grouped by family and with the
+ * auto-detected arch pre-selected. Falls back to the detected arch (or a
+ * disabled placeholder) plus Custom when the list could not be fetched. */
+function buildArchOptions(arches, autoArch) {
+	arches = Array.isArray(arches) ? arches : [];
+
+	if (!arches.length) {
+		return [
+			autoArch
+				? E('option', { 'value': autoArch, 'selected': '' }, '%s (%s)'.format(autoArch, _('auto-detected')))
+				: E('option', { 'value': '', 'disabled': '', 'selected': '' }, _('Select architecture…')),
+			E('option', { 'value': 'custom' }, _('Custom / Manual…'))
+		];
+	}
+
+	const order = ['x86', 'arm64', 'arm32', 'mips64', 'mips', 'loong', 'riscv', 'other'];
+	const labels = {};
+	const groups = {};
+
+	arches.forEach(function(a) {
+		const f = archFamily(a);
+		labels[f[0]] = f[1];
+		(groups[f[0]] = groups[f[0]] || []).push(a);
+	});
+
+	const opts = [];
+
+	order.forEach(function(code) {
+		if (!groups[code])
+			return;
+		opts.push(E('optgroup', { 'label': labels[code] }, groups[code].map(function(a) {
+			const isAuto = (a === autoArch);
+			return E('option', { 'value': a, 'selected': isAuto ? '' : null },
+				isAuto ? '%s  (%s)'.format(a, _('detected')) : a);
+		})));
+	});
+
+	opts.push(E('option', { 'value': 'custom' }, _('Custom / Manual…')));
+
+	return opts;
+}
+
 function buildPanelHref(d) {
 	if (!d.panel_port)
 		return '';
@@ -314,16 +370,8 @@ return view.extend({
 						buildVersionOptions(updateInfo.releases, updateInfo.latest)),
 					E('input', { 'id': 'sb-version-input', 'type': 'text', 'placeholder': '1.13.19', 'style': 'display:none;min-width:120px' }),
 					E('label', { 'for': 'sb-arch-select' }, _('Architecture')),
-					E('select', { 'id': 'sb-arch-select', 'style': 'min-width:170px' }, [
-						/* There is no server-side auto-detect fallback: when arch
-						 * detection failed the user must pick Custom/Manual, so
-						 * offer a disabled placeholder rather than a dead ''
-						 * option that would just error on Update. */
-						autoArch
-							? E('option', { 'value': autoArch }, '%s (%s)'.format(autoArch, _('auto-detected')))
-							: E('option', { 'value': '', 'disabled': '', 'selected': '' }, _('Select architecture…')),
-						E('option', { 'value': 'custom' }, _('Custom/Manual'))
-					]),
+					E('select', { 'id': 'sb-arch-select', 'style': 'min-width:200px' },
+						buildArchOptions(updateInfo.arches, autoArch)),
 					E('input', { 'id': 'sb-custom-arch', 'type': 'text', 'placeholder': 'e.g. aarch64_cortex-a53', 'style': 'display:none;min-width:200px' })
 				]),
 				E('div', { 'style': 'margin:8px 0' }, [

@@ -691,31 +691,30 @@ function http_fetch(url) {
 function cmd_update_info() {
 	const arch = detect_platform_arch();
 
-	/* Pull the full release list so the UI can offer real, existing versions
-	 * grouped by channel -- rather than a free-text field that fails when the
-	 * user types a version that was never published. Only tag_name + the
-	 * prerelease flag are forwarded (not the changelog bodies). */
+	/* Version list from the lightweight tags endpoint. The releases list with
+	 * its embedded assets is ~25 MB for this repo; tags is ~40 KB. Classify by
+	 * the sing-box tag convention: -alpha/-beta/-rc are prereleases, the rest
+	 * are stable. This lets the UI offer real, existing versions instead of a
+	 * free-text field that fails when a version was never published. */
 	let releases = [];
 	let latest = '';
-	const body = http_fetch('https://api.github.com/repos/SagerNet/sing-box/releases?per_page=100');
+	const tags = http_fetch('https://api.github.com/repos/SagerNet/sing-box/tags?per_page=100');
 
-	if (trim(body) != '') {
+	if (trim(tags) != '') {
 		try {
-			const data = json(body);
+			const data = json(tags);
 
 			if (type(data) == 'array') {
-				for (let rel in data) {
-					if (type(rel) != 'object' || rel.draft)
+				for (let t in data) {
+					if (type(t) != 'object')
 						continue;
 
-					const ver = trim(replace('' + (rel.tag_name || ''), /^v/, ''));
+					const ver = trim(replace('' + (t.name || ''), /^v/, ''));
 
 					if (ver == '')
 						continue;
 
-					/* Authoritative prerelease flag; fall back to the sing-box
-					 * tag convention (-alpha/-beta/-rc) if it is missing. */
-					const pre = rel.prerelease ? true : (match(ver, /-(alpha|beta|rc)/) != null);
+					const pre = (match(ver, /-(alpha|beta|rc)/) != null);
 
 					releases[length(releases)] = { version: ver, prerelease: pre };
 
@@ -727,29 +726,40 @@ function cmd_update_info() {
 		catch (e) {}
 	}
 
-	/* Fallback: if the list could not be fetched/parsed, still try to report
-	 * the single latest stable so the panel is not left empty. */
-	if (length(releases) == 0) {
-		const lb = http_fetch('https://api.github.com/repos/SagerNet/sing-box/releases/latest');
+	/* Architectures the upstream actually publishes, parsed from the latest
+	 * release's OpenWrt assets -- so the UI never hard-codes an arch list.
+	 * One release (~250 KB) is enough; the matrix is stable across releases. */
+	let arches = [];
+	const rel = http_fetch('https://api.github.com/repos/SagerNet/sing-box/releases/latest');
 
-		if (trim(lb) != '') {
-			try {
-				const d = json(lb);
-				const ver = trim(replace('' + (d.tag_name || ''), /^v/, ''));
+	if (trim(rel) != '') {
+		try {
+			const d = json(rel);
 
-				if (ver != '') {
-					latest = ver;
-					releases[0] = { version: ver, prerelease: false };
+			if (latest == '')
+				latest = trim(replace('' + (d.tag_name || ''), /^v/, ''));
+
+			if (type(d.assets) == 'array') {
+				const seen = {};
+
+				for (let asset in d.assets) {
+					const m = match('' + (asset.name || ''), /_openwrt_(.+)\.(ipk|apk)$/);
+
+					if (m != null)
+						seen[m[1]] = 1;
 				}
+
+				arches = sort(keys(seen));
 			}
-			catch (e) {}
 		}
+		catch (e) {}
 	}
 
 	ok({
 		version_output: get_version_output(),
 		latest: latest,
 		releases: releases,
+		arches: arches,
 		raw_arch: arch[0],
 		auto_arch: arch[1],
 		arch_source: arch[2]
