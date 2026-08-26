@@ -17,6 +17,35 @@ const call = L.bind(sb.call, sb);
 const esc = sb.esc;
 const fmtBytes = sb.fmtBytes;
 
+/* Build the <select> children for the version picker from the release list
+ * the helper fetched, grouped by channel. Falls back to a single "Custom"
+ * entry (with the free-text field) when the list could not be fetched. */
+function buildVersionOptions(releases, latest) {
+	releases = Array.isArray(releases) ? releases : [];
+
+	const stable = releases.filter(function(r) { return r && r.version && !r.prerelease; });
+	const pre = releases.filter(function(r) { return r && r.version && r.prerelease; });
+	const opts = [];
+
+	if (stable.length)
+		opts.push(E('optgroup', { 'label': _('Stable') }, stable.map(function(r) {
+			const isLatest = (r.version === latest);
+			return E('option', { 'value': r.version, 'selected': isLatest ? '' : null },
+				isLatest ? '%s  (%s)'.format(r.version, _('latest')) : r.version);
+		})));
+
+	if (pre.length)
+		opts.push(E('optgroup', { 'label': _('Pre-release (alpha/beta/rc)') }, pre.map(function(r) {
+			return E('option', { 'value': r.version }, r.version);
+		})));
+
+	/* Manual entry stays available for downgrades to anything not listed. */
+	opts.push(E('option', { 'value': '__custom__', 'selected': releases.length ? null : '' },
+		_('Custom / Manual…')));
+
+	return opts;
+}
+
 function buildPanelHref(d) {
 	if (!d.panel_port)
 		return '';
@@ -163,7 +192,10 @@ return view.extend({
 	},
 
 	handleUpdate: function(ev) {
-		const version = document.getElementById('sb-version-input').value.trim();
+		const verSel = document.getElementById('sb-version-select');
+		const version = (!verSel || verSel.value === '__custom__')
+			? document.getElementById('sb-version-input').value.trim()
+			: verSel.value;
 		const archSel = document.getElementById('sb-arch-select').value;
 		const customArch = document.getElementById('sb-custom-arch').value.trim();
 		const url = document.getElementById('sb-url-input').value.trim();
@@ -172,7 +204,7 @@ return view.extend({
 
 		if (!url && (!version || !arch)) {
 			msg.style.color = 'red';
-			msg.textContent = _('Provide a version and architecture, or a URL.');
+			msg.textContent = _('Select a version and architecture, or provide a URL.');
 			return;
 		}
 
@@ -277,8 +309,10 @@ return view.extend({
 				E('div', {}, [ _('Detected architecture: '),
 					E('span', { 'id': 'sb-arch-tip' }, autoArch || _('unknown')) ]),
 				E('div', { 'style': 'margin:8px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center' }, [
-					E('label', { 'for': 'sb-version-input' }, _('Version')),
-					E('input', { 'id': 'sb-version-input', 'type': 'text', 'placeholder': '1.13.19', 'style': 'min-width:120px' }),
+					E('label', { 'for': 'sb-version-select' }, _('Version')),
+					E('select', { 'id': 'sb-version-select', 'style': 'min-width:200px' },
+						buildVersionOptions(updateInfo.releases, updateInfo.latest)),
+					E('input', { 'id': 'sb-version-input', 'type': 'text', 'placeholder': '1.13.19', 'style': 'display:none;min-width:120px' }),
 					E('label', { 'for': 'sb-arch-select' }, _('Architecture')),
 					E('select', { 'id': 'sb-arch-select', 'style': 'min-width:170px' }, [
 						/* There is no server-side auto-detect fallback: when arch
@@ -334,6 +368,16 @@ return view.extend({
 		archSel.addEventListener('change', function() {
 			customIn.style.display = (archSel.value === 'custom') ? '' : 'none';
 		});
+
+		const verSel = container.querySelector('#sb-version-select');
+		const verInput = container.querySelector('#sb-version-input');
+
+		const syncVerInput = function() {
+			verInput.style.display = (verSel.value === '__custom__') ? '' : 'none';
+		};
+
+		verSel.addEventListener('change', syncVerInput);
+		syncVerInput();
 
 		poll.add(L.bind(this.refreshStatus, this), 5);
 		poll.add(L.bind(this.refreshHealth, this), 5);

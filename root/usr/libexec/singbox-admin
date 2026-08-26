@@ -678,29 +678,78 @@ function cmd_service(action) {
 		fail(sprintf('Failed to %s sing-box.', action), { code: rc });
 }
 
+/* Fetch a URL (uclient-fetch, wget fallback); returns the body or ''. */
+function http_fetch(url) {
+	let body = run_capture(sprintf('uclient-fetch -T 8 -qO- %s 2>/dev/null', shq(url)));
+
+	if (trim(body) == '')
+		body = run_capture(sprintf('wget -T 8 -qO- %s 2>/dev/null', shq(url)));
+
+	return body;
+}
+
 function cmd_update_info() {
+	const arch = detect_platform_arch();
+
+	/* Pull the full release list so the UI can offer real, existing versions
+	 * grouped by channel -- rather than a free-text field that fails when the
+	 * user types a version that was never published. Only tag_name + the
+	 * prerelease flag are forwarded (not the changelog bodies). */
+	let releases = [];
 	let latest = '';
-	let body = run_capture('uclient-fetch -T 8 -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null');
+	const body = http_fetch('https://api.github.com/repos/SagerNet/sing-box/releases?per_page=100');
 
-	if (body == '')
-		body = run_capture('wget -T 8 -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null');
-
-	if (body != '') {
+	if (trim(body) != '') {
 		try {
 			const data = json(body);
 
-			latest = trim(replace('' + (data.tag_name || ''), /^v/, ''));
+			if (type(data) == 'array') {
+				for (let rel in data) {
+					if (type(rel) != 'object' || rel.draft)
+						continue;
+
+					const ver = trim(replace('' + (rel.tag_name || ''), /^v/, ''));
+
+					if (ver == '')
+						continue;
+
+					/* Authoritative prerelease flag; fall back to the sing-box
+					 * tag convention (-alpha/-beta/-rc) if it is missing. */
+					const pre = rel.prerelease ? true : (match(ver, /-(alpha|beta|rc)/) != null);
+
+					releases[length(releases)] = { version: ver, prerelease: pre };
+
+					if (!pre && latest == '')
+						latest = ver;
+				}
+			}
 		}
-		catch (e) {
-			latest = '';
-		}
+		catch (e) {}
 	}
 
-	const arch = detect_platform_arch();
+	/* Fallback: if the list could not be fetched/parsed, still try to report
+	 * the single latest stable so the panel is not left empty. */
+	if (length(releases) == 0) {
+		const lb = http_fetch('https://api.github.com/repos/SagerNet/sing-box/releases/latest');
+
+		if (trim(lb) != '') {
+			try {
+				const d = json(lb);
+				const ver = trim(replace('' + (d.tag_name || ''), /^v/, ''));
+
+				if (ver != '') {
+					latest = ver;
+					releases[0] = { version: ver, prerelease: false };
+				}
+			}
+			catch (e) {}
+		}
+	}
 
 	ok({
 		version_output: get_version_output(),
 		latest: latest,
+		releases: releases,
 		raw_arch: arch[0],
 		auto_arch: arch[1],
 		arch_source: arch[2]
