@@ -3,6 +3,7 @@
 'require fs';
 'require rpc';
 'require request';
+'require ui';
 
 /*
  * Shared helpers for the sing-box admin views. Loaded via
@@ -43,6 +44,28 @@ return baseclass.extend({
 			.replace(/>/g, '&gt;')
 			.replace(/"/g, '&quot;')
 			.replace(/'/g, '&#39;');
+	},
+
+	/* In-page confirmation dialog. Returns a Promise resolving to true/false.
+	 * Replaces window.confirm(), which some browsers/webviews suppress (a
+	 * dialog dismissed with "prevent additional dialogs" makes every later
+	 * confirm() silently return false -- the button then looks dead). */
+	confirm: function(title, message, okLabel) {
+		return new Promise(function(resolve) {
+			const done = function(val) { ui.hideModal(); resolve(val); };
+
+			ui.showModal(title, [
+				E('p', {}, message),
+				E('div', { 'class': 'right' }, [
+					E('button', { 'class': 'btn', 'click': function() { done(false); } }, _('Cancel')),
+					' ',
+					E('button', {
+						'class': 'btn cbi-button cbi-button-action important',
+						'click': function() { done(true); }
+					}, okLabel || _('OK'))
+				])
+			]);
+		});
 	},
 
 	fmtBytes: function(n) {

@@ -156,20 +156,27 @@ return view.extend({
 		container.querySelector('#sb-cfg-restore').addEventListener('click', function() {
 			const name = bkSelect.value;
 
-			if (!name || !confirm(_('Restore %s? Your current config is snapshotted first, and the backup is validated before it replaces config.json.').format(name)))
+			if (!name)
 				return;
 
-			bkMsg.style.color = '#666';
-			bkMsg.textContent = _('Restoring…');
+			return sb.confirm(_('Restore backup'),
+				_('Restore %s? Your current config is snapshotted first, and the backup is validated before it replaces config.json.').format(name),
+				_('Restore')).then(function(ok) {
+				if (!ok)
+					return;
 
-			return call('config', 'restore', '--name', name).then(function(res) {
-				bkMsg.style.color = res.ok ? 'green' : 'red';
-				bkMsg.textContent = res.message;
+				bkMsg.style.color = '#666';
+				bkMsg.textContent = _('Restoring…');
 
-				if (res.ok)
-					return call('config', 'read').then(function(cd) {
-						text.value = cd.content || '{}\n';
-					});
+				return call('config', 'restore', '--name', name).then(function(res) {
+					bkMsg.style.color = res.ok ? 'green' : 'red';
+					bkMsg.textContent = res.message;
+
+					if (res.ok)
+						return call('config', 'read').then(function(cd) {
+							text.value = cd.content || '{}\n';
+						});
+				});
 			});
 		});
 

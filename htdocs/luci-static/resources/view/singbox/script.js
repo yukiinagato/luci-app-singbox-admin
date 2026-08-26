@@ -119,13 +119,17 @@ return view.extend({
 		});
 
 		container.querySelector('#sb-fw-apply').addEventListener('click', function() {
-			if (!confirm(_('Save the editor and apply the firewall script now? On failure it auto-rolls back to the last good version.')))
-				return;
-			return saveThen(function() {
-				setMsg(_('Applying…'));
-				return call('fw', 'apply').then(function(res) {
-					setMsg(res.message || '', res.ok ? 'green' : 'red');
-					return refreshState();
+			return sb.confirm(_('Apply firewall script'),
+				_('Save the editor and apply the firewall script now? On failure it auto-rolls back to the last good version.'),
+				_('Apply now')).then(function(ok) {
+				if (!ok)
+					return;
+				return saveThen(function() {
+					setMsg(_('Applying…'));
+					return call('fw', 'apply').then(function(res) {
+						setMsg(res.message || '', res.ok ? 'green' : 'red');
+						return refreshState();
+					});
 				});
 			});
 		});

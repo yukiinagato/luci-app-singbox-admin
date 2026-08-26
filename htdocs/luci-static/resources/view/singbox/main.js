@@ -264,15 +264,20 @@ return view.extend({
 			return;
 		}
 
-		if (!confirm(_('Download and install the selected sing-box build? The service will be restarted if running.')))
-			return;
+		const target = url ? url : '%s (%s)'.format(version, arch);
 
-		msg.style.color = '#666';
-		msg.textContent = _('Starting update…');
+		return sb.confirm(_('Update sing-box'),
+			_('Download and install %s? The service will be restarted if running.').format(target),
+			_('Download & install')).then(L.bind(function(ok) {
+			if (!ok)
+				return;
 
-		const args = url ? ['--url', url] : ['--version', version, '--arch', arch];
+			msg.style.color = '#666';
+			msg.textContent = _('Starting update…');
 
-		call.apply(null, ['update-start'].concat(args)).then(function(data) {
+			const args = url ? ['--url', url] : ['--version', version, '--arch', arch];
+
+			return call.apply(null, ['update-start'].concat(args)).then(function(data) {
 			if (!data.ok) {
 				msg.style.color = 'red';
 				msg.textContent = data.message;
@@ -301,6 +306,7 @@ return view.extend({
 			msg.style.color = 'red';
 			msg.textContent = e.message;
 		});
+		}, this));
 	},
 	/* ==== SECTION: render ==== */
 
