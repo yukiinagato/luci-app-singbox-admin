@@ -22,6 +22,17 @@ The app is a **modern JS LuCI app**: client-side views
 `luci-compat` dependency**, and all backend access is gated by the rpcd ACL in
 `/usr/share/rpcd/acl.d/luci-app-singbox-admin.json`.
 
+### Older OpenWrt / classic (Lua) LuCI
+
+The JS rewrite landed in **v4.0.0**. If your system runs the older Lua-CBI LuCI
+(OpenWrt ≤ 21.02, or any build without client-side JS views), install the last
+Lua-based release instead:
+
+- **[v3.1.3](https://github.com/yukiinagato/luci-app-singbox-admin/releases/tag/v3.1.3)**
+  — the last version compatible with classic Lua LuCI.
+
+v3.1.3 is feature-frozen (no further updates); v4.x targets 23.05+ only.
+
 ## Features
 
 **Dashboard** (`admin/services/sing-box/main`)

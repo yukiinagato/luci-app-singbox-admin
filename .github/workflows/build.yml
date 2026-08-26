@@ -27,15 +27,19 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             RAW_VER=$(echo "${{ github.ref_name }}" | sed 's/^v//')
             FINAL_VER="${RAW_VER}-1"
+            # apk revision format: 1.2.3-r1
+            APK_VER="${RAW_VER}-r1"
           else
+            # Dev build. The .ipk name keeps the short SHA; apk's version
+            # grammar forbids it (no arbitrary '-' segments / hex), so the .apk
+            # uses the '_git<timestamp>' suffix apk understands, revision r0.
             FINAL_VER="${BASE_VER}-git-${TIMESTAMP}-${SHORT_SHA}"
+            APK_VER="${BASE_VER}_git${TIMESTAMP}-r0"
           fi
 
           echo "FINAL_VER=$FINAL_VER" >> $GITHUB_ENV
-          sed -i "s/Version: .*/Version: $FINAL_VER/" control
-          # apk package revision format: 1.2.3-r4
-          APK_VER=$(echo "$FINAL_VER" | sed -E 's/-([0-9]+)$/-r\1/')
           echo "APK_VER=$APK_VER" >> $GITHUB_ENV
+          sed -i "s/Version: .*/Version: $FINAL_VER/" control
 
       - name: Build IPK (legacy opkg)
         run: |
@@ -130,6 +134,11 @@ jobs:
 
   release:
     needs: build
+    # Publish a GitHub Release only for version tags. Branch pushes still build
+    # and upload artifacts (above) for validation, but must not create/update a
+    # rolling "latest" release -- that was marking a prerelease as latest over
+    # the real versioned releases, and failed on every push anyway.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,8 +153,7 @@ jobs:
       - name: Create/Update Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+          tag_name: ${{ github.ref_name }}
           files: artifacts/*
           make_latest: true
           generate_release_notes: true
