@@ -247,6 +247,55 @@ return view.extend({
 		return call('health').then(this.renderProcs);
 	},
 
+	/* Gate the update button on whether the upstream actually publishes a
+	 * package for the picked version+arch in this device's format. Only
+	 * dropdown picks are checked; a custom version/arch or a direct URL is
+	 * left to the updater's own pre-flight. */
+	checkAvailability: function() {
+		const verSel = document.getElementById('sb-version-select');
+		const archSel = document.getElementById('sb-arch-select');
+		const urlEl = document.getElementById('sb-url-input');
+		const btn = document.getElementById('sb-update-btn');
+		const note = document.getElementById('sb-asset-note');
+
+		if (!verSel || !archSel || !btn || !note)
+			return;
+
+		const picked = (verSel.value !== '__custom__') && (archSel.value !== 'custom');
+		const url = urlEl ? urlEl.value.trim() : '';
+
+		if (url || !picked) {
+			btn.disabled = false;
+			note.textContent = '';
+			return;
+		}
+
+		const version = verSel.value;
+		const arch = archSel.value;
+
+		note.style.color = '#666';
+		note.textContent = _('Checking package availability…');
+
+		return call('asset-check', '--version', version, '--arch', arch).then(function(res) {
+			/* Ignore a stale reply if the selection moved on. */
+			if (verSel.value !== res.version || archSel.value !== res.arch)
+				return;
+
+			if (res.known && res.available === false) {
+				btn.disabled = true;
+				note.style.color = '#c00';
+				note.textContent = _('sing-box %s has no OpenWrt package for %s in this system\'s format. Pick a different version.').format(version, arch);
+			}
+			else {
+				btn.disabled = false;
+				note.textContent = '';
+			}
+		}).catch(function() {
+			btn.disabled = false;
+			note.textContent = '';
+		});
+	},
+
 	handleUpdate: function(ev) {
 		const verSel = document.getElementById('sb-version-select');
 		const version = (!verSel || verSel.value === '__custom__')
@@ -388,6 +437,7 @@ return view.extend({
 				E('div', { 'style': 'margin:8px 0' },
 					E('button', { 'class': 'btn cbi-button cbi-button-apply', 'id': 'sb-update-btn',
 						'click': ui.createHandlerFn(this, 'handleUpdate') }, _('Update now'))),
+				E('div', { 'id': 'sb-asset-note', 'style': 'margin:4px 0;color:#c00' }),
 				E('div', { 'id': 'sb-update-msg', 'style': 'color:#666' })
 			]),
 
@@ -418,9 +468,11 @@ return view.extend({
 
 		const archSel = container.querySelector('#sb-arch-select');
 		const customIn = container.querySelector('#sb-custom-arch');
+		const check = L.bind(this.checkAvailability, this);
 
 		archSel.addEventListener('change', function() {
 			customIn.style.display = (archSel.value === 'custom') ? '' : 'none';
+			check();
 		});
 
 		const verSel = container.querySelector('#sb-version-select');
@@ -430,8 +482,10 @@ return view.extend({
 			verInput.style.display = (verSel.value === '__custom__') ? '' : 'none';
 		};
 
-		verSel.addEventListener('change', syncVerInput);
+		verSel.addEventListener('change', function() { syncVerInput(); check(); });
+		container.querySelector('#sb-url-input').addEventListener('input', check);
 		syncVerInput();
+		check();
 
 		poll.add(L.bind(this.refreshStatus, this), 5);
 		poll.add(L.bind(this.refreshHealth, this), 5);

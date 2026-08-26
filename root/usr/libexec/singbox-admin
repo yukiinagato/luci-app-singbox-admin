@@ -31,7 +31,7 @@ const UPDATE_PID = '/tmp/sing-box-update.pid';
 
 const SUBCOMMANDS = [
 	'status', 'health', 'service',
-	'update-info', 'update-start', 'update-status',
+	'update-info', 'update-start', 'update-status', 'asset-check',
 	'fw', 'config'
 ];
 
@@ -766,6 +766,52 @@ function cmd_update_info() {
 	});
 }
 
+/* The package format this device installs: opkg -> .ipk, apk -> .apk. Mirrors
+ * singbox-admin-update.sh's PKG_MGR detection (opkg wins if both exist). */
+function pkg_format() {
+	if (run_rc('command -v opkg >/dev/null 2>&1') == 0)
+		return 'ipk';
+	if (run_rc('command -v apk >/dev/null 2>&1') == 0)
+		return 'apk';
+
+	return 'ipk';
+}
+
+/* Whether the upstream publishes an OpenWrt package for this version+arch in
+ * the format this device needs. Availability is format-specific: older
+ * releases ship only .ipk, and .apk builds started later -- so 1.13.0 has an
+ * .ipk but no .apk (an apk device picking 1.13.0 would 404). Not every tag has
+ * OpenWrt builds at all (alpha releases often don't). Checks the single
+ * release's assets (~250 KB) rather than the 25 MB full list. Returns
+ * true/false, or null when the check could not run (network) so callers can
+ * treat "unknown" as "allow". */
+function asset_available(version, arch) {
+	const body = http_fetch(sprintf('https://api.github.com/repos/SagerNet/sing-box/releases/tags/v%s', version));
+
+	if (trim(body) == '')
+		return null;
+
+	/* Literal match against the raw JSON: sing-box_<ver>_openwrt_<arch>.<ext>. */
+	return (index(body, sprintf('_openwrt_%s.%s', arch, pkg_format())) >= 0);
+}
+
+function cmd_asset_check(opts) {
+	const version = sanitize_version(opts['--version']);
+	const arch = sanitize_arch(opts['--arch']);
+
+	if (version == null || arch == null)
+		fail('Invalid version or architecture.');
+
+	const avail = asset_available(version, arch);
+
+	ok({
+		version: version,
+		arch: arch,
+		known: (avail != null),
+		available: (avail == null) ? true : avail
+	});
+}
+
 function update_proc_alive() {
 	const pid = trim(fs.readfile(UPDATE_PID) || '');
 
@@ -1130,6 +1176,10 @@ function main(args) {
 
 	case 'update-status':
 		cmd_update_status();
+		break;
+
+	case 'asset-check':
+		cmd_asset_check(parse_opts(rest));
 		break;
 
 	case 'fw':
