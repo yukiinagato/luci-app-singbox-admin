@@ -71,7 +71,11 @@ jobs:
           sudo apt-get update -qq
           # lua5.1 is needed by apk-tools' -Dhelp=enabled (help text generator).
           sudo apt-get install -y -qq meson ninja-build libssl-dev zlib1g-dev lua5.1
-          git clone --depth 1 --branch v3.0.5 https://gitlab.alpinelinux.org/alpine/apk-tools.git /tmp/apk-tools
+          # Clone from Alpine's GitHub mirror first (GitHub-to-GitHub is
+          # reliable inside Actions); gitlab.alpinelinux.org has timed out from
+          # the runners. The mirror carries the identical v3.0.5 tag.
+          git clone --depth 1 --branch v3.0.5 https://github.com/alpinelinux/apk-tools.git /tmp/apk-tools \
+            || git clone --depth 1 --branch v3.0.5 https://gitlab.alpinelinux.org/alpine/apk-tools.git /tmp/apk-tools
           cd /tmp/apk-tools
           # Same options as OpenWrt mainline's package/system/apk host build.
           meson setup build --prefix=/usr --buildtype=release \
